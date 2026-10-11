@@ -121,7 +121,9 @@ jobs:
           APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
           "$SDK/$BT/zipalign" -f 4 "$APK" /tmp/app-aligned.apk
           if [ -n "$KS_B64" ]; then
-            echo "$KS_B64" | base64 -d > /tmp/traeclock.jks
+            # defensive: strip any whitespace/newlines GitHub might carry in the secret
+            echo "$KS_B64" | tr -d ' \r\n' | base64 -d > /tmp/traeclock.jks
+            ls -la /tmp/traeclock.jks
             "$SDK/$BT/apksigner" sign --ks /tmp/traeclock.jks --ks-type PKCS12 \
               --ks-pass "pass:${KS_PASS:-}" --ks-key-alias "${KS_ALIAS:-traeclock}" \
               --key-pass "pass:${KS_KEYPASS:-${KS_PASS:-}}" /tmp/app-aligned.apk
