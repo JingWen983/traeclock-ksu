@@ -1,0 +1,9 @@
+#!/bin/sh
+# Gradle wrapper bootstrap (standard wrapper jar fetched from gradle distribution).
+# CI uses gradle/actions/setup-gradle or installs Gradle 8.7 directly; this
+# wrapper delegates to a locally installed gradle when the jar is absent.
+if command -v gradle >/dev/null 2>&1; then
+    exec gradle "$@"
+fi
+echo "gradle not found: CI installs Gradle 8.7 via setup step" >&2
+exit 1

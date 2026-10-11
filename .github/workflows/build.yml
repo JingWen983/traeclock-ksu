@@ -1,0 +1,169 @@
+name: build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  rust:
+    name: Rust (aarch64/armv7/x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
+
+      - name: Install NDK
+        run: |
+          ANDROID_NDK_HOME=${ANDROID_NDK_LATEST_HOME:-}
+          if [ -z "$ANDROID_NDK_HOME" ]; then
+            echo "ANDROID_NDK_LATEST_HOME not set; installing NDK r27"
+            wget -q https://dl.google.com/android/repository/android-ndk-r27d-linux.zip
+            unzip -q android-ndk-r27d-linux.zip -d "$HOME"
+            ANDROID_NDK_HOME="$HOME/android-ndk-r27d"
+          fi
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> "$GITHUB_ENV"
+
+      - name: Run tests (host)
+        working-directory: daemon
+        run: cargo test --workspace
+
+      - name: Build release binaries for 3 ABIs
+        working-directory: daemon
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
+        run: |
+          mkdir -p dist
+          for target in aarch64-linux-android armv7-linux-androideabi x86_64-linux-android; do
+            # cargo-ndk style linker config via NDK clang wrappers
+            case "$target" in
+              aarch64-linux-android) abi=arm64-v8a; api=26 ;;
+              armv7-linux-androideabi) abi=armeabi-v7a; api=26 ;;
+              x86_64-linux-android) abi=x86_64; api=26 ;;
+            esac
+            mkdir -p ".cargo-target/$target"
+            cat > "${ANDROID_NDK_HOME}/wrap-${target}.sh" <<EOF
+          #!/bin/sh
+          exec "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/${target}${api}-clang" "\$@"
+          EOF
+            chmod +x "${ANDROID_NDK_HOME}/wrap-${target}.sh"
+            export CARGO_TARGET_DIR="cargo-target-android"
+            RUSTFLAGS="-C linker=${ANDROID_NDK_HOME}/wrap-${target}.sh" \
+              cargo build --release --target "$target"
+            mkdir -p "dist/$abi"
+            cp "cargo-target-android/$target/release/traeclockd" "dist/$abi/traeclockd"
+            cp "cargo-target-android/$target/release/traeclockctl" "dist/$abi/traeclockctl"
+            "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" "dist/$abi/traeclockd" "dist/$abi/traeclockctl"
+          done
+
+      - name: Assemble KernelSU module zip
+        run: |
+          VERSION=$(grep '^version =' daemon/Cargo.toml | head -1 | cut -d'"' -f2)
+          STAGE="module-stage"
+          cp -r module "$STAGE"
+          mkdir -p "$STAGE/bin"
+          cp -r dist/arm64-v8a dist/armeabi-v7a dist/x86_64 "$STAGE/bin/"
+          cd "$STAGE"
+          zip -r "../TraeClock-${VERSION}.zip" .
+          cd ..
+          mv "TraeClock-${VERSION}.zip" TraeClock.zip
+          ls -la TraeClock.zip
+
+      - name: Upload module artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-zip
+          path: TraeClock.zip
+
+  app:
+    name: Manager App APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Build release APK
+        working-directory: app
+        run: |
+          gradle assembleRelease --no-daemon
+
+      - name: Sign APK (if keystore secret present)
+        working-directory: app
+        env:
+          KS_B64: ${{ secrets.TRAECLOCK_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.TRAECLOCK_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.TRAECLOCK_KEY_ALIAS }}
+          KS_KEYPASS: ${{ secrets.TRAECLOCK_KEY_PASSWORD }}
+        run: |
+          APK="app/build/outputs/apk/release/app-release-unsigned.apk"
+          [ -f "$APK" ] || APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > /tmp/traeclock.jks
+            SDK="$ANDROID_HOME/build-tools"
+            BT=$(ls "$SDK" | sort -V | tail -1)
+            "$SDK/$BT/zipalign" -f 4 "$APK" /tmp/app-aligned.apk
+            "$SDK/$BT/apksigner" sign --ks /tmp/traeclock.jks \
+              --ks-pass "pass:${KS_PASS:-}" --ks-key-alias "${KS_ALIAS:-traeclock}" \
+              --key-pass "pass:${KS_KEYPASS:-${KS_PASS:-}}" /tmp/app-aligned.apk
+            mv /tmp/app-aligned.apk app-release-signed.apk
+            echo "SIGNED=app-release-signed.apk" >> "$GITHUB_ENV"
+          else
+            # fall back to debug signing so the artifact is installable
+            SDK="$ANDROID_HOME/build-tools"
+            BT=$(ls "$SDK" | sort -V | tail -1)
+            "$SDK/$BT/zipalign" -f 4 "$APK" /tmp/app-aligned.apk
+            "$SDK/$BT/apksigner" sign --ks /usr/lib/jvm/*/lib/security/cacerts 2>/dev/null || true
+            cp /tmp/app-aligned.apk app-release-unsigned.apk
+            echo "SIGNED=app-release-unsigned.apk" >> "$GITHUB_ENV"
+          fi
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: manager-apk
+          path: |
+            app/app-release-signed.apk
+            app/app-release-unsigned.apk
+
+  release:
+    name: GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [rust, app]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: module-zip
+      - uses: actions/download-artifact@v4
+        with:
+          name: manager-apk
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            TraeClock.zip
+            app-release-signed.apk
+            app-release-unsigned.apk
+          generate_release_notes: true

@@ -1,0 +1,25 @@
+[package]
+name = "tc-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Platform-agnostic port of TraeWorkAssistant check-in + anti-risk-control protocols (Trae / WorkBuddy / Qoder)"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+p256 = { workspace = true }
+aes = { workspace = true }
+cbc = { workspace = true }
+md-5 = { workspace = true }
+num-bigint = { workspace = true }
+base64 = { workspace = true }
+rand = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+ureq = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }

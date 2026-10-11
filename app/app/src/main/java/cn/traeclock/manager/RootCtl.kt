@@ -1,0 +1,84 @@
+package cn.traeclock.manager
+
+import com.google.gson.Gson
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
+import com.topjohnwu.superuser.Shell
+
+/** One CLI invocation result. */
+data class CtlResult(val code: Int, val stdout: String) {
+    fun json(): JsonObject? = runCatching {
+        JsonParser.parseString(stdout).asJsonObject
+    }.getOrNull()
+}
+
+/**
+ * Root channel to the module's traeclockctl CLI. All output contracts are the
+ * JSON lines documented in tc-ctl (last line of stdout is the result object).
+ */
+object RootCtl {
+
+    val gson = Gson()
+
+    init {
+        Shell.enableVerboseLogging = false
+        Shell.setDefaultBuilder(
+            Shell.Builder.create()
+                .setFlags(Shell.FLAG_REDIRECT_STDERR)
+                .setTimeout(60)
+        )
+    }
+
+    fun isRootAvailable(): Boolean = runCatching { Shell.getShell().isRoot }.getOrDefault(false)
+
+    private fun ctlPath(): String = "/data/adb/modules/traeclock/bin/traeclockctl"
+
+    fun isModuleInstalled(): Boolean =
+        runCatching {
+            Shell.cmd("test -x ${ctlPath()} && echo yes").exec().out.joinToString("").contains("yes")
+        }.getOrDefault(false)
+
+    fun call(vararg args: String): CtlResult {
+        val quoted = args.joinToString(" ") { "'${it.replace("'", "'\\''")}'" }
+        val res = Shell.cmd("${ctlPath()} $quoted").exec()
+        return CtlResult(res.code, res.out.joinToString("\n"))
+    }
+
+    // ── typed wrappers ──────────────────────────────────────────────────────
+
+    fun status(): JsonObject? = call("status").json()
+
+    fun accounts(app: String? = null): List<JsonObject> {
+        val args = mutableListOf("accounts")
+        app?.let { args.add(it) }
+        val obj = call(*args.toTypedArray()).json() ?: return emptyList()
+        return obj.getAsJsonArray("accounts")?.map { it.asJsonObject } ?: emptyList()
+    }
+
+    fun runNow(app: String?): CtlResult =
+        if (app == null) call("run-now") else call("run-now", app)
+
+    fun remove(app: String, uid: String): CtlResult = call("remove", app, uid)
+
+    fun setEnabled(app: String, uid: String, enabled: Boolean): CtlResult =
+        call(if (enabled) "enable" else "disable", app, uid)
+
+    fun setConfig(patchJson: String): CtlResult = call("config", patchJson)
+
+    fun log(lines: Int = 200): List<String> {
+        val obj = call("log", lines.toString()).json() ?: return emptyList()
+        return obj.getAsJsonArray("lines")?.map { it.asString } ?: emptyList()
+    }
+
+    fun traeLoginUrl(): JsonObject? = call("trae-login-url").json()
+
+    fun traeCallback(url: String): CtlResult = call("trae-callback", url)
+
+    fun traeRefresh(uid: String): CtlResult = call("trae-refresh", uid)
+
+    fun wbStart(): JsonObject? = call("wb-start").json()
+
+    fun wbPoll(state: String): CtlResult = call("wb-poll", state)
+
+    fun qoderWait(timeoutSecs: Int): CtlResult = call("qoder-wait", timeoutSecs.toString())
+}

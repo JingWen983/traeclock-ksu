@@ -1,0 +1,20 @@
+# Rust
+daemon/target/
+daemon/cargo-target-android/
+daemon/dist/
+target/
+
+# App
+app/.gradle/
+app/build/
+app/local.properties
+*.jks
+*.keystore
+
+# Data
+module-stage/
+*.zip
+
+# IDE
+.idea/
+.vscode/
