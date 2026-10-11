@@ -237,7 +237,8 @@ fun LoginPage() {
                     traeState = j != null
                     traeUrl?.let { openBrowser(it) }
                 }
-            }) { Text("① 生成并打开授权页") }            if (traeUrl != null) {
+            }) { Text("① 生成并打开授权页") }
+            if (traeUrl != null) {
                 OutlinedTextField(
                     value = callbackInput,
                     onValueChange = { callbackInput = it },
