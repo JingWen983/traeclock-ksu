@@ -27,10 +27,11 @@ jobs:
 
       - name: Locate NDK
         run: |
-          if [ -n "$ANDROID_NDK_LATEST_HOME" ] && [ -d "$ANDROID_NDK_LATEST_HOME" ]; then
+          # prefer the runner's NDK r27 LTS (ANDROID_NDK), fall back to LATEST, then download
+          if [ -n "$ANDROID_NDK" ] && [ -d "$ANDROID_NDK" ]; then
+            echo "NDK=$ANDROID_NDK" >> "$GITHUB_ENV"
+          elif [ -n "$ANDROID_NDK_LATEST_HOME" ] && [ -d "$ANDROID_NDK_LATEST_HOME" ]; then
             echo "NDK=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
-          elif [ -n "$ANDROID_NDK_HOME" ] && [ -d "$ANDROID_NDK_HOME" ]; then
-            echo "NDK=$ANDROID_NDK_HOME" >> "$GITHUB_ENV"
           else
             wget -q https://dl.google.com/android/repository/android-ndk-r27d-linux.zip
             unzip -q android-ndk-r27d-linux.zip -d "$HOME"
@@ -47,8 +48,9 @@ jobs:
           ANDROID_NDK_HOME: ${{ env.NDK }}
         run: |
           # cargo-ndk configures per-target linkers AND creates the unversioned
-          # clang shims that cc-rs (ring) needs
-          cargo ndk -p 26 \
+          # clang shims that cc-rs (ring) needs. NOTE: --platform is the API
+          # level; -p means --package in cargo-ndk.
+          cargo ndk --platform 26 \
             -t arm64-v8a -t armeabi-v7a -t x86_64 \
             -- build --release --workspace
           STRIP="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
