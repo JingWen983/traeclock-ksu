@@ -7,8 +7,9 @@ BIN="$MODDIR/bin/traeclockd"
 DATA_DIR="/data/adb/traeclock"
 PID_FILE="$DATA_DIR/daemon.pid"
 
-mkdir -p "$DATA_DIR"
+mkdir -p "$DATA_DIR/logs"
 chmod 700 "$DATA_DIR" 2>/dev/null
+chmod 700 "$BIN" 2>/dev/null
 
 # do not double-start
 if [ -f "$PID_FILE" ]; then
@@ -18,10 +19,8 @@ if [ -f "$PID_FILE" ]; then
     fi
 fi
 
-if [ -x "$BIN" ]; then
-    # ABI check: only run if the binary matches this device
-    if "$BIN" --version >/dev/null 2>&1 || true; then
-        nohup "$BIN" > "$DATA_DIR/logs/daemon.out" 2>&1 &
-        echo $! > "$PID_FILE"
-    fi
+# no argument probing here: traeclockd takes no flags and runs forever —
+# run it strictly in the background
+if [ -f "$BIN" ]; then
+    nohup "$BIN" > "$DATA_DIR/logs/daemon.out" 2>&1 &
 fi
