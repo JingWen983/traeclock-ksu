@@ -112,10 +112,12 @@ fun OverviewPage() {
                     } }
                     Apps.ALL.forEach { app ->
                         val c = s.counts[app] ?: CountRow(0, 0, 0)
-                        Card { Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                            Text(Apps.displayName(app), fontWeight = FontWeight.Bold)
-                            Text("${c.enabled}/${c.total} 启用" + if (c.needsRelogin > 0) " · ${c.needsRelogin} 需重登" else "")
-                        } }
+                        Card(modifier = Modifier.fillMaxWidth()) {
+                            Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(Apps.displayName(app), fontWeight = FontWeight.Bold)
+                                Text("${c.enabled}/${c.total} 启用" + if (c.needsRelogin > 0) " · ${c.needsRelogin} 需重登" else "")
+                            }
+                        }
                     }
                 } ?: Text("加载中…")
                 if (msg.isNotEmpty()) Text(msg, color = MaterialTheme.colorScheme.primary)
@@ -145,7 +147,9 @@ fun AccountsPage() {
     var filter by remember { mutableStateOf<String?>(null) }
 
     fun refresh() = scope.launch {
-        withContext(Dispatchers.IO) { accounts = RootCtl.accounts(filter) }
+        withContext(Dispatchers.IO) {
+            accounts = RootCtl.accounts(filter).map { parseAccount(it) }
+        }
     }
     LaunchedEffect(filter) { refresh() }
 
