@@ -22,48 +22,45 @@ jobs:
         with:
           targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
 
-      - name: Install NDK
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Locate NDK
         run: |
-          ANDROID_NDK_HOME=${ANDROID_NDK_LATEST_HOME:-}
-          if [ -z "$ANDROID_NDK_HOME" ]; then
-            echo "ANDROID_NDK_LATEST_HOME not set; installing NDK r27"
+          if [ -n "$ANDROID_NDK_LATEST_HOME" ] && [ -d "$ANDROID_NDK_LATEST_HOME" ]; then
+            echo "NDK=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+          elif [ -n "$ANDROID_NDK_HOME" ] && [ -d "$ANDROID_NDK_HOME" ]; then
+            echo "NDK=$ANDROID_NDK_HOME" >> "$GITHUB_ENV"
+          else
             wget -q https://dl.google.com/android/repository/android-ndk-r27d-linux.zip
             unzip -q android-ndk-r27d-linux.zip -d "$HOME"
-            ANDROID_NDK_HOME="$HOME/android-ndk-r27d"
+            echo "NDK=$HOME/android-ndk-r27d" >> "$GITHUB_ENV"
           fi
-          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> "$GITHUB_ENV"
 
       - name: Run tests (host)
         working-directory: daemon
         run: cargo test --workspace
 
-      - name: Build release binaries for 3 ABIs
+      - name: Build release binaries for 3 ABIs (cargo-ndk)
         working-directory: daemon
         env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
+          ANDROID_NDK_HOME: ${{ env.NDK }}
         run: |
-          mkdir -p dist
-          for target in aarch64-linux-android armv7-linux-androideabi x86_64-linux-android; do
-            # cargo-ndk style linker config via NDK clang wrappers
-            case "$target" in
-              aarch64-linux-android) abi=arm64-v8a; api=26 ;;
-              armv7-linux-androideabi) abi=armeabi-v7a; api=26 ;;
-              x86_64-linux-android) abi=x86_64; api=26 ;;
-            esac
-            mkdir -p ".cargo-target/$target"
-            cat > "${ANDROID_NDK_HOME}/wrap-${target}.sh" <<EOF
-          #!/bin/sh
-          exec "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/${target}${api}-clang" "\$@"
-          EOF
-            chmod +x "${ANDROID_NDK_HOME}/wrap-${target}.sh"
-            export CARGO_TARGET_DIR="cargo-target-android"
-            RUSTFLAGS="-C linker=${ANDROID_NDK_HOME}/wrap-${target}.sh" \
-              cargo build --release --target "$target"
+          # cargo-ndk configures per-target linkers AND creates the unversioned
+          # clang shims that cc-rs (ring) needs
+          cargo ndk -p 26 \
+            -t arm64-v8a -t armeabi-v7a -t x86_64 \
+            -- build --release --workspace
+          STRIP="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          for pair in "arm64-v8a aarch64-linux-android" "armeabi-v7a armv7-linux-androideabi" "x86_64 x86_64-linux-android"; do
+            set -- $pair
+            abi="$1"; triple="$2"
             mkdir -p "dist/$abi"
-            cp "cargo-target-android/$target/release/traeclockd" "dist/$abi/traeclockd"
-            cp "cargo-target-android/$target/release/traeclockctl" "dist/$abi/traeclockctl"
-            "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" "dist/$abi/traeclockd" "dist/$abi/traeclockctl"
+            cp "target/$triple/release/traeclockd"   "dist/$abi/"
+            cp "target/$triple/release/traeclockctl" "dist/$abi/"
+            "$STRIP" "dist/$abi/traeclockd" "dist/$abi/traeclockctl"
           done
+          ls -la dist/*/ | head -30
 
       - name: Assemble KernelSU module zip
         run: |
@@ -96,8 +93,9 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # ubuntu-latest ships a full Android SDK at $ANDROID_HOME — just accept licenses
+      - name: Accept SDK licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -106,10 +104,9 @@ jobs:
 
       - name: Build release APK
         working-directory: app
-        run: |
-          gradle assembleRelease --no-daemon
+        run: gradle assembleRelease --no-daemon
 
-      - name: Sign APK (if keystore secret present)
+      - name: Sign APK
         working-directory: app
         env:
           KS_B64: ${{ secrets.TRAECLOCK_KEYSTORE_B64 }}
@@ -117,35 +114,33 @@ jobs:
           KS_ALIAS: ${{ secrets.TRAECLOCK_KEY_ALIAS }}
           KS_KEYPASS: ${{ secrets.TRAECLOCK_KEY_PASSWORD }}
         run: |
-          APK="app/build/outputs/apk/release/app-release-unsigned.apk"
-          [ -f "$APK" ] || APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          SDK="$ANDROID_HOME/build-tools"
+          BT=$(ls "$SDK" | sort -V | tail -1)
+          APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          "$SDK/$BT/zipalign" -f 4 "$APK" /tmp/app-aligned.apk
           if [ -n "$KS_B64" ]; then
             echo "$KS_B64" | base64 -d > /tmp/traeclock.jks
-            SDK="$ANDROID_HOME/build-tools"
-            BT=$(ls "$SDK" | sort -V | tail -1)
-            "$SDK/$BT/zipalign" -f 4 "$APK" /tmp/app-aligned.apk
             "$SDK/$BT/apksigner" sign --ks /tmp/traeclock.jks \
               --ks-pass "pass:${KS_PASS:-}" --ks-key-alias "${KS_ALIAS:-traeclock}" \
               --key-pass "pass:${KS_KEYPASS:-${KS_PASS:-}}" /tmp/app-aligned.apk
-            mv /tmp/app-aligned.apk app-release-signed.apk
-            echo "SIGNED=app-release-signed.apk" >> "$GITHUB_ENV"
+            cp /tmp/app-aligned.apk app-release-signed.apk
           else
-            # fall back to debug signing so the artifact is installable
-            SDK="$ANDROID_HOME/build-tools"
-            BT=$(ls "$SDK" | sort -V | tail -1)
-            "$SDK/$BT/zipalign" -f 4 "$APK" /tmp/app-aligned.apk
-            "$SDK/$BT/apksigner" sign --ks /usr/lib/jvm/*/lib/security/cacerts 2>/dev/null || true
-            cp /tmp/app-aligned.apk app-release-unsigned.apk
-            echo "SIGNED=app-release-unsigned.apk" >> "$GITHUB_ENV"
+            # no secrets: ephemeral debug keystore so the APK is installable
+            keytool -genkeypair -keystore /tmp/traeclock-debug.jks -storepass traeclock \
+              -keypass traeclock -alias traeclock -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=TraeClock Debug,O=TraeClock,C=CN"
+            "$SDK/$BT/apksigner" sign --ks /tmp/traeclock-debug.jks \
+              --ks-pass pass:traeclock --ks-key-alias traeclock --key-pass pass:traeclock \
+              /tmp/app-aligned.apk
+            cp /tmp/app-aligned.apk app-release-signed.apk
           fi
+          ls -la app-release-signed.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: manager-apk
-          path: |
-            app/app-release-signed.apk
-            app/app-release-unsigned.apk
+          path: app/app-release-signed.apk
 
   release:
     name: GitHub Release
@@ -165,5 +160,4 @@ jobs:
           files: |
             TraeClock.zip
             app-release-signed.apk
-            app-release-unsigned.apk
           generate_release_notes: true
