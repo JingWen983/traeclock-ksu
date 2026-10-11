@@ -70,7 +70,7 @@ jobs:
           STAGE="module-stage"
           cp -r module "$STAGE"
           mkdir -p "$STAGE/bin"
-          cp -r dist/arm64-v8a dist/armeabi-v7a dist/x86_64 "$STAGE/bin/"
+          cp -r daemon/dist/arm64-v8a daemon/dist/armeabi-v7a daemon/dist/x86_64 "$STAGE/bin/"
           cd "$STAGE"
           zip -r "../TraeClock-${VERSION}.zip" .
           cd ..
