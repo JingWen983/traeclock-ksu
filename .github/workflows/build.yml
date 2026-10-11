@@ -122,9 +122,10 @@ jobs:
           "$SDK/$BT/zipalign" -f 4 "$APK" /tmp/app-aligned.apk
           if [ -n "$KS_B64" ]; then
             echo "$KS_B64" | base64 -d > /tmp/traeclock.jks
-            "$SDK/$BT/apksigner" sign --ks /tmp/traeclock.jks \
+            "$SDK/$BT/apksigner" sign --ks /tmp/traeclock.jks --ks-type PKCS12 \
               --ks-pass "pass:${KS_PASS:-}" --ks-key-alias "${KS_ALIAS:-traeclock}" \
               --key-pass "pass:${KS_KEYPASS:-${KS_PASS:-}}" /tmp/app-aligned.apk
+            "$SDK/$BT/apksigner" verify --print-certs /tmp/app-aligned.apk
             cp /tmp/app-aligned.apk app-release-signed.apk
           else
             # no secrets: ephemeral debug keystore so the APK is installable
