@@ -3,6 +3,7 @@ package cn.traeclock.manager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -46,7 +47,7 @@ class MainActivity : ComponentActivity() {
         // Edge-to-edge: draw behind the system bars so the top app bar's Miuix
         // theme color extends under the (transparent) status bar — the status
         // bar then "auto-tints" with the page background in light/dark modes.
-        androidx.activity.enableEdgeToEdge(
+        enableEdgeToEdge(
             statusBarStyle = androidx.activity.SystemBarStyle.auto(
                 android.graphics.Color.TRANSPARENT,
                 android.graphics.Color.TRANSPARENT,
