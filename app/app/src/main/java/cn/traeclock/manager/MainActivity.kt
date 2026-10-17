@@ -21,6 +21,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -238,11 +239,11 @@ fun LoginPage() {
                 scope.launch {
                     // start the loopback listener FIRST, then open the browser;
                     // trae-wait blocks until the callback (max 300s)
-                    val waitJob = launch(Dispatchers.IO) { RootCtl.traeWait(300) }
+                    val waitJob = async(Dispatchers.IO) { RootCtl.traeWait(300) }
                     withContext(Dispatchers.IO) {
                         RootCtl.traeLoginUrl()?.get("url")?.asString?.let { openBrowser(it) }
                     }
-                    val r = waitJob.join(); traeBusy = false
+                    val r = waitJob.await(); traeBusy = false
                     val j = runCatching { com.google.gson.JsonParser.parseString(r.stdout).asJsonObject }.getOrNull()
                     traeResult = when {
                         j?.has("ok") == true && j.get("ok").asBoolean -> "成功：${j.get("user_id")?.asString ?: ""}"
