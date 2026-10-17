@@ -539,6 +539,9 @@ fun LoginPage() {
             flow = null; traeUrl = null; wbState = null; wbUrl = null; qoderUrl = null
         }
 
+        // Full-screen overlay: when a flow is active, render ONLY the webview.
+        // (Previously both were composed in the same Box and the list painted
+        // over the webview — the login page appeared "behind" the cards.)
         if (flow != null) {
             EmbeddedLoginWebview(
                 url = traeUrl ?: wbUrl ?: qoderUrl.orEmpty(),
@@ -600,6 +603,7 @@ fun LoginPage() {
                     }
                 },
             )
+            return@StatusGate
         }
 
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp)) {
