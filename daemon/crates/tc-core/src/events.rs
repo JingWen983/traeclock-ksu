@@ -92,7 +92,12 @@ impl Event {
     }
 
     pub fn to_json(&self) -> Value {
-        let mut v = json!({ "type": self.kind });
+        let mut v = json!({
+            "type": self.kind,
+            // every NDJSON event carries a local timestamp — the manager log
+            // page renders it directly (previously undated, user complaint)
+            "ts": crate::util::now_iso_local(),
+        });
         if let Value::Object(map) = &self.fields {
             for (k, val) in map {
                 v[k] = val.clone();
@@ -135,6 +140,8 @@ mod tests {
         assert!(lines[1].contains("\"status\":\"already\""));
         assert!(lines[2].contains("\"delta\":5"));
         assert!(lines[3].contains("\"ok\":1"));
+        // every event carries a local timestamp (manager log renders it)
+        assert!(lines.iter().all(|l| l.contains("\"ts\":")));
         // no token fields anywhere
         assert!(lines.iter().all(|l| !l.contains("jwt") && !l.contains("token")));
     }

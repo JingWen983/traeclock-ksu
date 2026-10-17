@@ -43,6 +43,19 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         RootCtlAppContextHolder.context = applicationContext
+        // Edge-to-edge: draw behind the system bars so the top app bar's Miuix
+        // theme color extends under the (transparent) status bar — the status
+        // bar then "auto-tints" with the page background in light/dark modes.
+        androidx.activity.enableEdgeToEdge(
+            statusBarStyle = androidx.activity.SystemBarStyle.auto(
+                android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT,
+            ),
+            navigationBarStyle = androidx.activity.SystemBarStyle.auto(
+                android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT,
+            ),
+        )
         setContent { TraeClockApp() }
     }
 }
@@ -694,6 +707,9 @@ private fun EmbeddedLoginWebview(
     val context = RootCtlAppContextHolder.context
     var progress by remember(url) { mutableStateOf(0) }
     var doneLoading by remember(url) { mutableStateOf(false) }
+    // diagnostics for blank pages (Qoder): surface the last failed URL + error
+    var lastError by remember(url) { mutableStateOf("") }
+    var currentUrl by remember(url) { mutableStateOf(url) }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -703,6 +719,17 @@ private fun EmbeddedLoginWebview(
         ) {
             TextButton(text = "关闭", onClick = onClose)
             Text(title, style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            // escape hatch: some auth pages (Qoder 白屏) render fine in a real browser
+            TextButton(
+                text = "浏览器打开",
+                onClick = {
+                    runCatching {
+                        val i = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(currentUrl))
+                        i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        androidx.core.content.ContextCompat.startActivity(context, i, null)
+                    }
+                },
+            )
             if (!isTrae) {
                 TextButton(
                     text = "我已登录",
@@ -716,11 +743,23 @@ private fun EmbeddedLoginWebview(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
+        if (lastError.isNotEmpty()) {
+            Text(
+                "页面加载失败：$lastError\n可点「浏览器打开」在外部浏览器完成授权后回来点「我已登录」。",
+                style = MiuixTheme.textStyles.footnote2,
+                color = MiuixTheme.colorScheme.error,
+                modifier = Modifier.padding(horizontal = 12.dp),
+            )
+        }
         val webView = remember(url) {
             android.webkit.WebView(context).apply {
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
-                settings.userAgentString = "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36"
+                settings.databaseEnabled = true
+                // Qoder 白屏对策：授权页前端对 UA 做环境检测，mobile UA 会被判
+                // 「不支持的环境」渲染空白 —— 报桌面 Chrome UA（与桌面版同源）
+                settings.userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+                settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 webViewClient = object : android.webkit.WebViewClient() {
                     override fun shouldOverrideUrlLoading(
                         view: android.webkit.WebView,
@@ -734,10 +773,37 @@ private fun EmbeddedLoginWebview(
                             view.stopLoading()
                             return true
                         }
+                        // non-http(s) schemes (weixin:// etc.) cannot render in a
+                        // webview — hand them to the system
+                        if (u.scheme != "https" && u.scheme != "http") {
+                            runCatching {
+                                context.startActivity(
+                                    android.content.Intent(android.content.Intent.ACTION_VIEW, u)
+                                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                )
+                            }
+                            return true
+                        }
+                        currentUrl = u.toString()
                         return false
+                    }
+                    override fun onReceivedError(
+                        view: android.webkit.WebView,
+                        request: android.webkit.WebResourceRequest,
+                        error: android.webkit.WebResourceError,
+                    ) {
+                        // only surface main-frame failures (favicon 404s are noise)
+                        if (request.isForMainFrame) {
+                            lastError = "${error.description} (${error.code}) — $currentUrl"
+                        }
                     }
                     override fun onPageFinished(view: android.webkit.WebView, u: String?) {
                         doneLoading = true
+                        // blank-page detector: main frame finished but rendered
+                        // nothing → show a hint instead of a silent white screen
+                        if (u != null && view.title.isNullOrBlank() && view.contentHeight == 0) {
+                            lastError = "页面渲染为空（可能需要外部浏览器）— $u"
+                        }
                     }
                 }
                 webChromeClient = object : android.webkit.WebChromeClient() {
@@ -772,6 +838,25 @@ object DataCache {
 
 // ── 日志 ─────────────────────────────────────────────────────────────────────
 
+/** NDJSON event → "[2026-10-17 12:34:56] [done] ok=1 already=0 failed=0" style.
+ *  Falls back to the raw line for non-JSON payloads. */
+private fun formatLogLine(raw: String): String {
+    val o = runCatching { com.google.gson.JsonParser.parseString(raw).asJsonObject }.getOrNull() ?: return raw
+    val ts = o.get("ts")?.asString?.take(19)?.replace('T', ' ') ?: "????-??-?? ??:??:??"
+    val type = o.get("type")?.asString ?: "event"
+    val details = o.entrySet()
+        .filter { it.key !in setOf("type", "ts") }
+        .joinToString(" ") { (k, v) ->
+            val value = when {
+                v.isJsonNull -> "-"
+                v.isJsonObject || v.isJsonArray -> "…"
+                else -> v.asString.ifEmpty { "-" }
+            }
+            "$k=$value"
+        }
+    return "[$ts] [$type] $details"
+}
+
 @Composable
 fun LogPage() {
     StatusGate { _ ->
@@ -789,8 +874,10 @@ fun LogPage() {
                 )
             }
             LazyColumn {
-                items(lines.reversed()) { l ->
-                    Text(l, style = MiuixTheme.textStyles.footnote2, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(vertical = 1.dp))
+                items(lines.reversed()) { raw ->
+                    // render "[ts] line": extract the ts field from the NDJSON event
+                    val line = formatLogLine(raw)
+                    Text(line, style = MiuixTheme.textStyles.footnote2, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(vertical = 1.dp))
                 }
                 if (lines.isEmpty()) item { Text("暂无日志（等待守护进程执行签到）", style = MiuixTheme.textStyles.body2) }
             }
