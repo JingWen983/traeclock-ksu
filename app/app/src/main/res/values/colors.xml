@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#1B6EF3</color>
+    <!-- default (light) value; values-night overrides to the Miuix dark bg -->
+    <color name="window_bg_dark">#FFFFFF</color>
 </resources>
