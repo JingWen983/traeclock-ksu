@@ -794,7 +794,7 @@ private fun EmbeddedLoginWebview(
                     ) {
                         // only surface main-frame failures (favicon 404s are noise)
                         if (request.isForMainFrame) {
-                            lastError = "${error.description} (${error.code}) — $currentUrl"
+                            lastError = "${error.description} (code=${error.errorCode}) — $currentUrl"
                         }
                     }
                     override fun onPageFinished(view: android.webkit.WebView, u: String?) {
