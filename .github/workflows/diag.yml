@@ -1,9 +1,0 @@
-name: diag
-on: workflow_dispatch
-jobs:
-  diag:
-    runs-on: ubuntu-latest
-    steps:
-      - run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list 2>/dev/null | grep -E "platforms;android-3[4-9]|build-tools;3[5-9]" | head -20 || true

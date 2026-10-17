@@ -99,7 +99,10 @@ jobs:
       - name: Accept SDK licenses + ensure platform 37
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37" "build-tools;37.0.0" > /dev/null || true
+          # package name is android-37.0 (NOT android-37); build-tools 37.x line
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.0" > /dev/null
+          BT37=$("$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list 2>/dev/null | grep -oE "build-tools;37\.[0-9]+\.[0-9]+" | head -1)
+          [ -n "$BT37" ] && "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "$BT37" > /dev/null || true
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
