@@ -4,6 +4,21 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.drawBackdrop
+import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.effects.vibrancy
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -23,12 +38,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
-import top.yukonga.miuix.kmp.basic.NavigationBar
-import top.yukonga.miuix.kmp.basic.NavigationBarItem
-import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
@@ -66,30 +78,93 @@ fun TraeClockApp() {
     val controller = remember { top.yukonga.miuix.kmp.theme.ThemeController(top.yukonga.miuix.kmp.theme.ColorSchemeMode.System) }
     top.yukonga.miuix.kmp.theme.MiuixTheme(controller = controller) {
         var tab by remember { mutableIntStateOf(0) }
-        val tabs = listOf("概览", "看板", "账号", "登录", "日志", "设置")
-        Scaffold(
-            topBar = { SmallTopAppBar(title = "TraeClock", color = MiuixTheme.colorScheme.background) },
-            bottomBar = {
-                NavigationBar {
-                    tabs.forEachIndexed { index, label ->
-                        NavigationBarItem(
-                            selected = tab == index,
-                            onClick = { tab = index },
-                            icon = MiuixTabIcons.forIndex(index),
-                            label = label,
-                        )
-                    }
-                }
-            },
-        ) { innerPadding ->
-            Box(Modifier.padding(innerPadding)) {
+        val tabs = listOf("主页", "账号", "登录", "日志", "设置")
+        // liquid-glass bottom bar: the page content is captured into a backdrop
+        // layer and refracted through the bar (Kyant0/AndroidLiquidGlass)
+        val backdrop = rememberLayerBackdrop {
+            drawRect(MiuixTheme.colorScheme.background)
+            drawContent()
+        }
+        Box(Modifier.fillMaxSize()) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .layerBackdrop(backdrop)
+            ) {
                 when (tab) {
-                    0 -> OverviewPage()
-                    1 -> CreditsPage()
-                    2 -> AccountsPage()
-                    3 -> LoginPage()
-                    4 -> LogPage()
-                    5 -> SettingsPage()
+                    0 -> HomePage()
+                    1 -> AccountsPage()
+                    2 -> LoginPage()
+                    3 -> LogPage()
+                    4 -> SettingsPage()
+                }
+            }
+            GlassBottomBar(
+                tabs = tabs,
+                selected = tab,
+                onSelect = { tab = it },
+                backdrop = backdrop,
+                Modifier.align(Alignment.BottomCenter),
+            )
+        }
+    }
+}
+
+/** Floating liquid-glass pill bottom bar (SukiSU-style): pages scroll under it,
+ *  the backdrop refracts whatever is behind the bar. */
+@Composable
+private fun GlassBottomBar(
+    tabs: List<String>,
+    selected: Int,
+    onSelect: (Int) -> Unit,
+    backdrop: com.kyant.backdrop.Backdrop,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier
+            .padding(horizontal = 24f.dp)
+            .navigationBarsPadding()
+            .padding(bottom = 12f.dp)
+            .fillMaxWidth()
+            .height(64f.dp)
+            .drawBackdrop(
+                backdrop = backdrop,
+                shape = { CircleShape },
+                effects = {
+                    vibrancy()
+                    blur(4f.dp.toPx())
+                    lens(16f.dp.toPx(), 32f.dp.toPx())
+                },
+                onDrawSurface = { drawRect(MiuixTheme.colorScheme.surface.copy(alpha = 0.5f)) },
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            tabs.forEachIndexed { index, label ->
+                val sel = index == selected
+                Column(
+                    Modifier
+                        .clickable(
+                            interactionSource = null,
+                            indication = null,
+                        ) { onSelect(index) }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Icon(
+                        imageVector = MiuixTabIcons.forIndex(index),
+                        contentDescription = label,
+                        tint = if (sel) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    )
+                    Text(
+                        label,
+                        style = MiuixTheme.textStyles.footnote2,
+                        color = if (sel) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    )
                 }
             }
         }
@@ -112,13 +187,6 @@ private object MiuixTabIcons {
             moveTo(12f, 3f); lineTo(2f, 12f); lineTo(5f, 12f); lineTo(5f, 20f); lineTo(11f, 20f)
             lineTo(11f, 14f); lineTo(13f, 14f); lineTo(13f, 20f); lineTo(19f, 20f); lineTo(19f, 12f)
             lineTo(22f, 12f); close()
-        }
-    }
-    private val chart by lazy {
-        glyph("TabChart") {
-            moveTo(5f, 21f); lineTo(5f, 9f); lineTo(9f, 9f); lineTo(9f, 21f); close()
-            moveTo(10f, 21f); lineTo(10f, 3f); lineTo(14f, 3f); lineTo(14f, 21f); close()
-            moveTo(15f, 21f); lineTo(15f, 13f); lineTo(19f, 13f); lineTo(19f, 21f); close()
         }
     }
     private val people by lazy {
@@ -161,7 +229,7 @@ private object MiuixTabIcons {
 
     val forIndex: (Int) -> androidx.compose.ui.graphics.vector.ImageVector = { index ->
         when (index) {
-            0 -> home; 1 -> chart; 2 -> people; 3 -> person; 4 -> doc; else -> settings
+            0 -> home; 1 -> people; 2 -> person; 3 -> doc; else -> settings
         }
     }
 }
@@ -195,28 +263,49 @@ private fun GateCard(title: String, summary: String) {
     }
 }
 
-// ── 概览 ─────────────────────────────────────────────────────────────────────
+// ── 主页（守护进程状态 + 实时积分，合并自旧概览/看板页）──────────────────────
 
 @Composable
-fun OverviewPage() {
+fun HomePage() {
     StatusGate { _ ->
         val scope = rememberCoroutineScope()
         var status by remember { mutableStateOf(DataCache.status) }
+        var snapshot by remember { mutableStateOf(DataCache.credits) }
         var busy by remember { mutableStateOf(false) }
         var msg by remember { mutableStateOf("") }
+        var refreshing by remember { mutableStateOf(false) }
+        var expanded by remember { mutableStateOf(setOf<String>()) }
 
-        fun refresh() = scope.launch {
-            val s = withContext(Dispatchers.IO) { RootCtl.status()?.let { parseStatus(it) } }
-            if (s != null) { DataCache.status = s; status = s }
+        fun refreshStatus() {
+            scope.launch {
+                val s = withContext(Dispatchers.IO) { RootCtl.status()?.let { parseStatus(it) } }
+                if (s != null) { DataCache.status = s; status = s }
+            }
         }
-        LaunchedEffect(Unit) { refresh() }
+        fun refreshCredits() {
+            scope.launch {
+                refreshing = true
+                val s = withContext(Dispatchers.IO) { RootCtl.credits()?.let { parseCredits(it) } }
+                if (s != null) { DataCache.credits = s; snapshot = s }
+                refreshing = false
+            }
+        }
+        LaunchedEffect(Unit) { refreshStatus(); refreshCredits() }
+        // real-time dashboard: auto refresh every 60s while page stays open
+        LaunchedEffect(Unit) {
+            while (true) {
+                kotlinx.coroutines.delay(60_000)
+                if (!refreshing) {
+                    val s = withContext(Dispatchers.IO) { RootCtl.credits()?.let { parseCredits(it) } }
+                    if (s != null) { DataCache.credits = s; snapshot = s }
+                }
+            }
+        }
 
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp)) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 96.dp)) {
             item {
                 val s = status
-                if (s == null) {
-                    Text("加载中…", style = MiuixTheme.textStyles.body2)
-                } else {
+                if (s != null) {
                     SmallTitle(text = "守护进程")
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -284,58 +373,27 @@ fun OverviewPage() {
                                 val r = withContext(Dispatchers.IO) { RootCtl.runNow(null) }
                                 busy = false
                                 msg = if (r.code == 0) "已触发全部签到，结果见日志页" else "触发失败: ${r.stdout.take(120)}"
-                                refresh()
+                                refreshStatus()
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
                     )
+                } else {
+                    Text("加载中…", style = MiuixTheme.textStyles.body2)
                 }
             }
-        }
-    }
-}
 
-// ── 实时积分看板 ──────────────────────────────────────────────────────────────
-
-@Composable
-fun CreditsPage() {
-    StatusGate { _ ->
-        val scope = rememberCoroutineScope()
-        // process-level cache: switching tabs re-renders instantly from the last
-        // snapshot; the background refresh below updates it in place
-        var snapshot by remember { mutableStateOf(DataCache.credits) }
-        var refreshing by remember { mutableStateOf(false) }
-        var expanded by remember { mutableStateOf(setOf<String>()) }
-
-        fun refresh() = scope.launch {
-            refreshing = true
-            val s = withContext(Dispatchers.IO) { RootCtl.credits()?.let { parseCredits(it) } }
-            if (s != null) { DataCache.credits = s; snapshot = s }
-            refreshing = false
-        }
-        LaunchedEffect(Unit) { refresh() }
-        // auto refresh while the page stays open (real-time dashboard);
-        // skip while a manual refresh is already in flight
-        LaunchedEffect(Unit) {
-            while (true) {
-                kotlinx.coroutines.delay(60_000)
-                if (!refreshing) {
-                    val s = withContext(Dispatchers.IO) { RootCtl.credits()?.let { parseCredits(it) } }
-                    if (s != null) { DataCache.credits = s; snapshot = s }
-                }
-            }
-        }
-
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp)) {
+            // ── 实时积分 ──
             item {
                 val snap = snapshot
                 if (snap == null) {
+                    SmallTitle(text = "积分")
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         LinearProgressIndicator(modifier = Modifier.weight(1f))
                         Text("查询中…", style = MiuixTheme.textStyles.body2)
                     }
                 } else {
-                    SmallTitle(text = "总积分")
+                    SmallTitle(text = "实时积分")
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp)) {
                             Text("%.2f".format(snap.total), style = MiuixTheme.textStyles.title1, fontSize = 40.sp, fontWeight = FontWeight.Bold)
@@ -419,9 +477,9 @@ fun CreditsPage() {
                     }
                     Spacer(Modifier.height(12.dp))
                     TextButton(
-                        text = if (refreshing) "刷新中…" else "手动刷新",
+                        text = if (refreshing) "刷新中…" else "手动刷新积分",
                         enabled = !refreshing,
-                        onClick = { refresh() },
+                        onClick = { refreshCredits() },
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
@@ -446,7 +504,7 @@ fun AccountsPage() {
         }
         LaunchedEffect(filter) { refresh() }
 
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp)) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 96.dp)) {
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 4.dp)) {
                     CharChip("全部", filter == null) { filter = null }
@@ -620,7 +678,7 @@ fun LoginPage() {
             return@StatusGate
         }
 
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp)) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 96.dp)) {
             item {
                 SmallTitle(text = "添加账号（内嵌登录）")
                 if (result.isNotEmpty()) {
@@ -866,7 +924,7 @@ fun LogPage() {
         LaunchedEffect(Unit) {
             withContext(Dispatchers.IO) { lines = RootCtl.log(300) }
         }
-        Column(Modifier.fillMaxSize().padding(12.dp)) {
+        Column(Modifier.fillMaxSize().padding(start = 12.dp, end = 12.dp, top = 12.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("事件日志", style = MiuixTheme.textStyles.title3)
                 TextButton(
@@ -874,7 +932,7 @@ fun LogPage() {
                     onClick = { scope.launch { withContext(Dispatchers.IO) { lines = RootCtl.log(300) } } },
                 )
             }
-            LazyColumn {
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 96.dp)) {
                 items(lines.reversed()) { raw ->
                     // render "[ts] line": extract the ts field from the NDJSON event
                     val line = formatLogLine(raw)
@@ -904,7 +962,7 @@ fun SettingsPage() {
             withContext(Dispatchers.IO) { status = RootCtl.status()?.let { parseStatus(it) } }
         }
 
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp)) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 96.dp)) {
             item {
                 SmallTitle(text = "签到调度")
                 Card(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
