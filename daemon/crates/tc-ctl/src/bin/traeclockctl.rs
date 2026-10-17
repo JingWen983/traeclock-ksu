@@ -397,6 +397,12 @@ const TRAE_LOOPBACK_PORT: u16 = tc_core::trae_oauth::LOOPBACK_PORT;
 
 fn cmd_trae_login_url(store: &Store) -> i32 {
     let identity = load_identity(store);
+    // KEY FIX: persist the identity NOW — the authorization page registers
+    // this device; if load_identity regenerated a different key on the
+    // exchange call, the server rejects with 20403 Device not match.
+    if let Err(e) = store.save_json("trae_identity.json", &identity) {
+        return err_json(e);
+    }
     let (url, pending) = match tc_core::trae_oauth::login_url(&identity, "Android", "15") {
         Ok(x) => x,
         Err(e) => return err_json(e),
@@ -409,73 +415,7 @@ fn cmd_trae_login_url(store: &Store) -> i32 {
 
 fn cmd_trae_callback(store: &Store, url: Option<&str>) -> i32 {
     let Some(url) = url else { return err_json("缺少回调 URL 参数".into()) };
-    let cb = match tc_core::trae_oauth::parse_callback(url) {
-        Ok(c) => c,
-        Err(e) => return err_json(e),
-    };
-    let pending: Option<tc_core::trae_oauth::PendingLogin> =
-        store.read_json_opt("trae_pending_login.json");
-    // CSRF: callback loginTraceID must match the session state when both present
-    if let (Some(p), Some(tid)) = (&pending, &cb.login_trace_id) {
-        if *tid != p.state {
-            return err_json("loginTraceID 与会话 state 不匹配（CSRF 防护）".into());
-        }
-    }
-    let identity = load_identity(store);
-    let agent = tc_core::http::agent(30);
-    let exchange = if !cb.refresh_token.is_empty() {
-        tc_core::trae_oauth::exchange_token_refresh(&agent, &identity, &cb.refresh_token)
-    } else {
-        let verifier = pending.map(|p| p.pkce_verifier).unwrap_or_default();
-        tc_core::trae_oauth::exchange_token_auth_code(&agent, &identity, &cb.refresh_token, &verifier)
-    };
-    let result = match exchange {
-        Ok(r) => r,
-        Err(e) => return err_json(e),
-    };
-    let jwt_full = format!("Cloud-IDE-JWT {}", result.access_token);
-    let info = tc_core::jwt::parse(&jwt_full);
-    let Some(uid) = info.user_id else {
-        return err_json("无法从 JWT 解析 user id".into());
-    };
-    // user_id consistency guard on refresh-token flow
-    if let (Some(cb_uid), false) = (&cb.user_id, cb.refresh_token.is_empty()) {
-        if !cb_uid.is_empty() && cb_uid != &uid {
-            return err_json(format!("换发 token 归属不匹配: 期望={cb_uid}, 实际={uid}"));
-        }
-    }
-    // persist identity alongside the account (per-device identity reuse)
-    let _ = store.save_json("trae_identity.json", &identity);
-    let mut file = store.accounts();
-    let now = tc_core::util::now_iso_local();
-    if let Some(existing) = file
-        .accounts
-        .iter_mut()
-        .find(|a| a.app == APP_TRAE && a.user_id == uid)
-    {
-        existing.jwt = Some(jwt_full.clone());
-        existing.refresh_token = result.refresh_token.clone().or(existing.refresh_token.clone());
-        existing.updated_at = Some(now);
-    } else {
-        file.accounts.push(Account {
-            app: APP_TRAE.into(),
-            user_id: uid.clone(),
-            name: cb.user_name.clone().unwrap_or_else(|| uid.clone()),
-            enabled: true,
-            jwt: Some(jwt_full.clone()),
-            refresh_token: result.refresh_token.clone(),
-            created_at: Some(now),
-            ..Default::default()
-        });
-    }
-    if let Err(e) = store.save_accounts(&file) {
-        return err_json(e);
-    }
-    ok_json(serde_json::json!({
-        "ok": true, "user_id": uid,
-        "name": cb.user_name.unwrap_or_default(),
-        "exp_hours": info.exp_hours,
-    }))
+    finish_trae_login(store, url)
 }
 
 fn cmd_trae_refresh(store: &Store, uid: Option<&str>) -> i32 {
@@ -841,7 +781,11 @@ fn cmd_trae_wait(timeout: Option<&str>) -> i32 {
                 );
                 let _ = stream.write_all(resp.as_bytes());
                 drop(stream);
-                let has_params = full_url.contains("refreshToken=") || full_url.contains("code=");
+                // accept any callback carrying login payload (main path is
+                // authCodeInfo=…, compat paths refreshToken=/code=)
+                let has_params = full_url.contains("authCodeInfo=")
+                    || full_url.contains("refreshToken=")
+                    || full_url.contains("code=");
                 if !has_params {
                     continue; // favicon or stray request; keep listening
                 }
@@ -856,7 +800,9 @@ fn cmd_trae_wait(timeout: Option<&str>) -> i32 {
     }
 }
 
-/// Shared finish path for trae-callback and trae-wait (was inline before).
+/// Shared finish path for trae-callback and trae-wait.
+/// Main path (抓包固化): native_ide callback carries authCodeInfo →
+/// ExchangeToken with PKCE verifier; compat: refreshToken / code / accessToken.
 fn finish_trae_login(store: &Store, callback_url: &str) -> i32 {
     let cb = match tc_core::trae_oauth::parse_callback(callback_url) {
         Ok(c) => c,
@@ -864,37 +810,90 @@ fn finish_trae_login(store: &Store, callback_url: &str) -> i32 {
     };
     let pending: Option<tc_core::trae_oauth::PendingLogin> =
         store.read_json_opt("trae_pending_login.json");
-    if let (Some(p), Some(tid)) = (&pending, &cb.login_trace_id) {
-        if *tid != p.state {
-            return err_json("loginTraceID 与会话 state 不匹配（CSRF 防护）".into());
+    // CSRF（桌面 oauth.rs:622 语义）：回调带 loginTraceID 且有在途会话时必须一致；
+    // authCode 回调缺 loginTraceID 且本机有在途会话 → 拒绝
+    if let Some(p) = &pending {
+        match &cb.login_trace_id {
+            Some(tid) if *tid != p.state => {
+                return err_json("loginTraceID 与会话 state 不匹配（CSRF 防护），已拒绝".into())
+            }
+            None if cb.auth_code.is_some() => {
+                return err_json("OAuth 回调缺少 loginTraceID，无法确认与本机登录请求的对应关系，已拒绝".into())
+            }
+            _ => {}
         }
     }
     let identity = load_identity(store);
     let agent = tc_core::http::agent(30);
-    let exchange = if !cb.refresh_token.is_empty() {
+    let exchange = if let Some(code) = cb.auth_code.clone().or_else(|| {
+        // 标准 code 参数也走 AuthCode 交换
+        if cb.refresh_token.is_empty() && callback_url.contains("code=") {
+            callback_url
+                .split("code=")
+                .nth(1)
+                .map(|s| s.split('&').next().unwrap_or("").to_string())
+        } else {
+            None
+        }
+    }) {
+        // 主路径：AuthCode + PKCE verifier（桌面 exchange_code 同款）
+        let verifier = pending.map(|p| p.pkce_verifier).unwrap_or_default();
+        tc_core::trae_oauth::exchange_token_auth_code(&agent, &identity, &code, &verifier, cb.host.as_deref())
+    } else if !cb.refresh_token.is_empty() {
         tc_core::trae_oauth::exchange_token_refresh(&agent, &identity, &cb.refresh_token)
     } else {
-        let verifier = pending.map(|p| p.pkce_verifier).unwrap_or_default();
-        tc_core::trae_oauth::exchange_token_auth_code(&agent, &identity, &cb.refresh_token, &verifier)
+        Err("回调缺少 authCodeInfo/refreshToken".into())
     };
     let result = match exchange {
         Ok(r) => r,
         Err(e) => return err_json(e),
     };
-    let jwt_full = format!("Cloud-IDE-JWT {}", result.access_token);
-    let info = tc_core::jwt::parse(&jwt_full);
-    let Some(uid) = info.user_id else {
-        return err_json("无法从 JWT 解析 user id".into());
+    let jwt_full = if result.access_token.starts_with("Cloud-IDE-JWT ") {
+        result.access_token.clone()
+    } else {
+        format!("Cloud-IDE-JWT {}", result.access_token)
     };
-    if let (Some(cb_uid), false) = (&cb.user_id, cb.refresh_token.is_empty()) {
-        if !cb_uid.is_empty() && cb_uid != &uid {
-            return err_json(format!("换发 token 归属不匹配: 期望={cb_uid}, 实际={uid}"));
+    let info = tc_core::jwt::parse(&jwt_full);
+    let uid = info
+        .user_id
+        .clone()
+        .or_else(|| cb.user_id.clone())
+        .unwrap_or_default();
+    if uid.is_empty() {
+        return err_json("无法从回调或 JWT 中获取 user_id".into());
+    }
+    // 换发 token 归属校验（refresh 交换场景）
+    if let Some(cb_uid) = &cb.user_id {
+        if !cb_uid.is_empty() && info.user_id.is_some() && &info.user_id.unwrap() != cb_uid {
+            return err_json(format!("换发 token 归属不匹配: 期望={cb_uid}"));
         }
     }
     let _ = store.save_json("trae_identity.json", &identity);
+    // issue #76 次因修复：新 JWT 绑定本次登录设备 → device_map 回写，
+    // 签到/积分查询的 x-device-id 必须与 JWT 同源，否则严格指纹校验 401
+    let mut cfg = store.config();
+    let dev_entry = cfg
+        .device_map
+        .entry(uid.clone())
+        .or_insert_with(|| tc_core::fingerprint::derive_device(&uid));
+    let mut dev_entry = dev_entry.clone();
+    dev_entry.device_id = identity.device_id.clone();
+    cfg.device_map.insert(uid.clone(), dev_entry);
+    if let Err(e) = store.save_config(&cfg) {
+        eprintln!("device_map 回写失败（不阻断登录）: {e}");
+    }
+    // 昵称兜底：GetUserInfo（桌面 oauth.rs get_user_info 同款端点）
+    let name = cb.user_name.clone().unwrap_or_else(|| {
+        get_user_info(&agent, &jwt_full)
+            .map(|(_, n)| if n.is_empty() { uid.clone() } else { n })
+            .unwrap_or_else(|| {
+                let head: String = uid.chars().take(8).collect();
+                format!("账号_{head}")
+            })
+    });
     let mut file = store.accounts();
     let now = tc_core::util::now_iso_local();
-    if let Some(existing) = file
+    let merged = if let Some(existing) = file
         .accounts
         .iter_mut()
         .find(|a| a.app == APP_TRAE && a.user_id == uid)
@@ -902,26 +901,62 @@ fn finish_trae_login(store: &Store, callback_url: &str) -> i32 {
         existing.jwt = Some(jwt_full.clone());
         existing.refresh_token = result.refresh_token.clone().or(existing.refresh_token.clone());
         existing.updated_at = Some(now);
+        true
     } else {
         file.accounts.push(Account {
             app: APP_TRAE.into(),
             user_id: uid.clone(),
-            name: cb.user_name.clone().unwrap_or_else(|| uid.clone()),
+            name: name.clone(),
             enabled: true,
             jwt: Some(jwt_full),
             refresh_token: result.refresh_token.clone(),
             created_at: Some(now),
             ..Default::default()
         });
-    }
+        false
+    };
     if let Err(e) = store.save_accounts(&file) {
         return err_json(e);
     }
     ok_json(serde_json::json!({
         "ok": true, "user_id": uid,
-        "name": cb.user_name.unwrap_or_default(),
+        "name": name, "merged": merged,
         "exp_hours": info.exp_hours,
     }))
+}
+
+/// GetUserInfo（桌面 oauth.rs:1313 同款端点与解析）
+fn get_user_info(agent: &ureq::Agent, jwt_full: &str) -> Option<(String, String)> {
+    let auth = if jwt_full.starts_with("Cloud-IDE-JWT ") {
+        jwt_full.to_string()
+    } else {
+        format!("Cloud-IDE-JWT {}", jwt_full.trim())
+    };
+    let headers = vec![
+        ("authorization".to_string(), auth),
+        ("content-type".to_string(), "application/json".to_string()),
+        ("accept".to_string(), "*/*".to_string()),
+    ];
+    let (status, body, _) = tc_core::http::post_json(
+        agent,
+        "https://api.trae.com.cn/cloudide/api/v3/trae/GetUserInfo",
+        &headers,
+        &serde_json::json!({}),
+    );
+    if status != 200 {
+        return None;
+    }
+    let b = body?;
+    let data = b.get("data").or_else(|| b.get("result"))?;
+    let user_id = tc_core::envelope::dig(data, &["user_id", "UserID", "userId"])
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let user_name = tc_core::envelope::dig(data, &["name", "user_name", "userName", "nickname"])
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Some((user_id, user_name))
 }
 
 fn cmd_daemon_pid(store: &Store) -> i32 {

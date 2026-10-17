@@ -36,6 +36,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.path
+import androidx.compose.ui.viewinterop.AndroidView
 
 class MainActivity : ComponentActivity() {
 
@@ -155,22 +156,15 @@ private object MiuixTabIcons {
 
 @Composable
 fun StatusGate(content: @Composable (refresh: () -> Unit) -> Unit) {
-    val scope = rememberCoroutineScope()
-    var rootOk by remember { mutableStateOf<Boolean?>(null) }
-    var moduleOk by remember { mutableStateOf<Boolean?>(null) }
-
-    fun check() = scope.launch {
-        withContext(Dispatchers.IO) {
-            rootOk = RootCtl.isRootAvailable()
-            moduleOk = rootOk == true && RootCtl.isModuleInstalled()
-        }
-    }
-    LaunchedEffect(Unit) { check() }
+    // RootCtl caches root/module probes process-wide; reuse them synchronously so
+    // every tab switch renders instantly instead of re-forking su shells.
+    val rootOk = RootCtl.isRootAvailable()
+    val moduleOk = rootOk && RootCtl.isModuleInstalled()
 
     when {
-        rootOk == false -> GateCard("未获得 Root", "本应用需要 KernelSU/Magisk root 才能与模块通信。")
-        moduleOk == false -> GateCard("未检测到 TraeClock 模块", "请先在 KernelSU 管理器中刷入 TraeClock 模块 zip 并重启。")
-        else -> content { check() }
+        !rootOk -> GateCard("未获得 Root", "本应用需要 KernelSU/Magisk root 才能与模块通信。")
+        !moduleOk -> GateCard("未检测到 TraeClock 模块", "请先在 KernelSU 管理器中刷入 TraeClock 模块 zip 并重启。")
+        else -> content { }
     }
 }
 
@@ -193,12 +187,13 @@ private fun GateCard(title: String, summary: String) {
 fun OverviewPage() {
     StatusGate { _ ->
         val scope = rememberCoroutineScope()
-        var status by remember { mutableStateOf<StatusView?>(null) }
+        var status by remember { mutableStateOf(DataCache.status) }
         var busy by remember { mutableStateOf(false) }
         var msg by remember { mutableStateOf("") }
 
         fun refresh() = scope.launch {
-            withContext(Dispatchers.IO) { status = RootCtl.status()?.let { parseStatus(it) } }
+            val s = withContext(Dispatchers.IO) { RootCtl.status()?.let { parseStatus(it) } }
+            if (s != null) { DataCache.status = s; status = s }
         }
         LaunchedEffect(Unit) { refresh() }
 
@@ -292,21 +287,28 @@ fun OverviewPage() {
 fun CreditsPage() {
     StatusGate { _ ->
         val scope = rememberCoroutineScope()
-        var snapshot by remember { mutableStateOf<CreditsSnapshot?>(null) }
+        // process-level cache: switching tabs re-renders instantly from the last
+        // snapshot; the background refresh below updates it in place
+        var snapshot by remember { mutableStateOf(DataCache.credits) }
         var refreshing by remember { mutableStateOf(false) }
         var expanded by remember { mutableStateOf(setOf<String>()) }
 
         fun refresh() = scope.launch {
             refreshing = true
-            withContext(Dispatchers.IO) { snapshot = RootCtl.credits()?.let { parseCredits(it) } }
+            val s = withContext(Dispatchers.IO) { RootCtl.credits()?.let { parseCredits(it) } }
+            if (s != null) { DataCache.credits = s; snapshot = s }
             refreshing = false
         }
         LaunchedEffect(Unit) { refresh() }
-        // auto refresh while the page stays open (real-time dashboard)
+        // auto refresh while the page stays open (real-time dashboard);
+        // skip while a manual refresh is already in flight
         LaunchedEffect(Unit) {
             while (true) {
                 kotlinx.coroutines.delay(60_000)
-                withContext(Dispatchers.IO) { snapshot = RootCtl.credits()?.let { parseCredits(it) } }
+                if (!refreshing) {
+                    val s = withContext(Dispatchers.IO) { RootCtl.credits()?.let { parseCredits(it) } }
+                    if (s != null) { DataCache.credits = s; snapshot = s }
+                }
             }
         }
 
@@ -420,12 +422,12 @@ fun CreditsPage() {
 fun AccountsPage() {
     StatusGate { _ ->
         val scope = rememberCoroutineScope()
-        var accounts by remember { mutableStateOf<List<AccountRow>>(emptyList()) }
+        var accounts by remember { mutableStateOf(DataCache.accounts) }
         var filter by remember { mutableStateOf<String?>(null) }
 
         fun refresh() = scope.launch {
             withContext(Dispatchers.IO) {
-                accounts = RootCtl.accounts(filter).map { parseAccount(it) }
+                accounts = RootCtl.accounts(filter).map { parseAccount(it) }.also { DataCache.accounts = it }
             }
         }
         LaunchedEffect(filter) { refresh() }
@@ -516,66 +518,114 @@ private fun CharChip(label: String, selected: Boolean, onClick: () -> Unit) {
     )
 }
 
-// ── 登录（三应用向导）────────────────────────────────────────────────────────
+// ── 登录（WebView 内嵌向导）──────────────────────────────────────────────────
 
+/** Login flows rendered inside an in-app WebView (no external browser hop,
+ *  no manual URL copying). Each flow gets its auth URL from the module CLI,
+ *  intercepts the OAuth redirect (Trae) or polls to completion (WB/Qoder),
+ *  then shows the result inline. */
 @Composable
 fun LoginPage() {
     StatusGate { _ ->
         val scope = rememberCoroutineScope()
-        var traeResult by remember { mutableStateOf("") }
-        var callbackInput by remember { mutableStateOf("") }
-        var wbStateId by remember { mutableStateOf<String?>(null) }
-        var wbResult by remember { mutableStateOf("") }
-        var qoderBusy by remember { mutableStateOf(false) }
-        var qoderResult by remember { mutableStateOf("") }
+        var flow by remember { mutableStateOf<String?>(null) }
+        var result by remember { mutableStateOf("") }
+        var traeUrl by remember { mutableStateOf<String?>(null) }
+        var wbState by remember { mutableStateOf<String?>(null) }
+        var wbUrl by remember { mutableStateOf<String?>(null) }
+        var qoderUrl by remember { mutableStateOf<String?>(null) }
+
+        fun closeFlow() {
+            flow = null; traeUrl = null; wbState = null; wbUrl = null; qoderUrl = null
+        }
+
+        if (flow != null) {
+            EmbeddedLoginWebview(
+                url = traeUrl ?: wbUrl ?: qoderUrl.orEmpty(),
+                title = when (flow) {
+                    "trae" -> "Trae 登录"
+                    "wb" -> "WorkBuddy 登录"
+                    else -> "Qoder 授权"
+                },
+                onClose = { closeFlow() },
+                onTraeCallback = { cbUrl ->
+                    scope.launch {
+                        val r = withContext(Dispatchers.IO) { RootCtl.traeCallback(cbUrl) }
+                        val j = r.json()
+                        result = when {
+                            j?.get("ok")?.asBoolean == true ->
+                                "✅ Trae 登录成功：${j?.get("name")?.asString ?: j?.get("user_id")?.asString}"
+                            else -> "❌ ${j?.get("error")?.asString ?: r.stdout.take(160)}"
+                        }
+                        closeFlow()
+                    }
+                },
+                onWbFinish = {
+                    scope.launch {
+                        val st = wbState
+                        if (st == null) { result = "❌ 会话丢失，请重试"; closeFlow(); return@launch }
+                        var last = ""
+                        repeat(12) {
+                            val r = withContext(Dispatchers.IO) { RootCtl.wbPoll(st) }
+                            val j = r.json()
+                            if (j?.get("pending")?.asBoolean == true) {
+                                last = "等待登录完成…"
+                                kotlinx.coroutines.delay(3000)
+                            } else {
+                                result = when {
+                                    j?.get("ok")?.asBoolean == true -> "✅ WorkBuddy 登录成功：${j?.get("user_id")?.asString}"
+                                    else -> "❌ ${r.stdout.take(160)}"
+                                }
+                                closeFlow()
+                                return@launch
+                            }
+                        }
+                        result = "❌ 轮询超时（$last）"
+                        closeFlow()
+                    }
+                },
+                onQoderFinish = {
+                    scope.launch {
+                        val r = withContext(Dispatchers.IO) { RootCtl.qoderWait(240) }
+                        val lines = r.stdout.lines().filter { it.trim().startsWith("{") }
+                        val j = lines.lastOrNull()?.let {
+                            runCatching { com.google.gson.JsonParser.parseString(it).asJsonObject }.getOrNull()
+                        }
+                        result = when {
+                            j?.has("ok") == true && j.get("ok").asBoolean -> "✅ Qoder 授权成功：${j.get("user_id")?.asString ?: ""}"
+                            j?.has("error") == true -> "❌ ${j.get("error").asString}"
+                            else -> "❌ ${r.stdout.take(160)}"
+                        }
+                        closeFlow()
+                    }
+                },
+            )
+        }
 
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp)) {
             item {
-                SmallTitle(text = "添加账号")
+                SmallTitle(text = "添加账号（内嵌登录）")
+                if (result.isNotEmpty()) {
+                    Card(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text(result, style = MiuixTheme.textStyles.body2)
+                            Spacer(Modifier.height(6.dp))
+                            TextButton(text = "清除提示", onClick = { result = "" })
+                        }
+                    }
+                }
+
                 Card(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Trae · OAuth 授权登录", style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Bold)
-                        Text(
-                            "① 点开始 → 自动打开浏览器并监听回调；② 在浏览器完成登录；③ 回到 App 看结果。",
-                            style = MiuixTheme.textStyles.footnote1,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        )
-                        var traeBusy by remember { mutableStateOf(false) }
+                        Text("Trae · OAuth 授权", style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Bold)
+                        Text("在 App 内完成登录，自动接收凭证，全程无需切换应用。", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
                         TextButton(
-                            text = if (traeBusy) "等待回调中…" else "开始登录（自动接收回调）",
-                            enabled = !traeBusy,
-                            onClick = {
-                                traeBusy = true; traeResult = ""
-                                scope.launch {
-                                    val waitJob = async(Dispatchers.IO) { RootCtl.traeWait(300) }
-                                    withContext(Dispatchers.IO) {
-                                        RootCtl.traeLoginUrl()?.get("url")?.asString?.let { openBrowser(it) }
-                                    }
-                                    val r = waitJob.await(); traeBusy = false
-                                    val j = runCatching { com.google.gson.JsonParser.parseString(r.stdout).asJsonObject }.getOrNull()
-                                    traeResult = when {
-                                        j?.has("ok") == true && j.get("ok").asBoolean -> "成功：${j.get("user_id")?.asString ?: ""}"
-                                        j?.has("error") == true -> j.get("error").asString
-                                        else -> r.stdout.take(200)
-                                    }
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        if (traeResult.isNotEmpty()) Text("结果: $traeResult", style = MiuixTheme.textStyles.footnote1)
-                        Text("备用：复制浏览器最终 127.0.0.1 页面地址手动完成。", style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-                        TextField(
-                            value = callbackInput,
-                            onValueChange = { callbackInput = it },
-                            label = "手动粘贴回调 URL（备用）",
-                        )
-                        TextButton(
-                            text = "手动完成登录",
-                            enabled = callbackInput.contains("127.0.0.1"),
+                            text = "打开内嵌登录页",
                             onClick = {
                                 scope.launch {
-                                    val r = withContext(Dispatchers.IO) { RootCtl.traeCallback(callbackInput.trim()) }
-                                    traeResult = r.json()?.get("ok")?.asBoolean?.let { "成功" } ?: r.stdout.take(200)
+                                    val j = withContext(Dispatchers.IO) { RootCtl.traeLoginUrl() }
+                                    traeUrl = j?.get("url")?.asString
+                                    if (traeUrl == null) result = "❌ 生成授权链接失败" else flow = "trae"
                                 }
                             },
                             modifier = Modifier.fillMaxWidth(),
@@ -586,69 +636,37 @@ fun LoginPage() {
                 Card(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("WorkBuddy · 扫码登录", style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Bold)
-                        Text("① 获取登录链接并打开；② 完成扫码/登录后回来点轮询。", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                        Text("内嵌打开登录页，完成后点「我已登录」自动入池。", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
                         TextButton(
-                            text = "① 获取登录链接并打开",
+                            text = "打开内嵌登录页",
                             onClick = {
                                 scope.launch {
                                     val j = withContext(Dispatchers.IO) { RootCtl.wbStart() }
-                                    wbStateId = j?.get("state")?.asString
-                                    j?.get("auth_url")?.asString?.let { openBrowser(it) }
+                                    wbState = j?.get("state")?.asString
+                                    wbUrl = j?.get("auth_url")?.asString
+                                    if (wbUrl == null) result = "❌ 获取登录链接失败" else flow = "wb"
                                 }
                             },
                             modifier = Modifier.fillMaxWidth(),
                         )
-                        if (wbStateId != null) {
-                            TextButton(
-                                text = "② 我已登录，轮询结果",
-                                onClick = {
-                                    scope.launch {
-                                        val r = withContext(Dispatchers.IO) { RootCtl.wbPoll(wbStateId!!) }
-                                        val j = r.json()
-                                        wbResult = when {
-                                            j?.get("pending")?.asBoolean == true -> "等待登录完成…"
-                                            j?.get("ok")?.asBoolean == true -> "成功：${j?.get("user_id")?.asString}"
-                                            else -> r.stdout.take(200)
-                                        }
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
-                        if (wbResult.isNotEmpty()) Text(wbResult, style = MiuixTheme.textStyles.footnote1)
                     }
                 }
 
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("Qoder · 设备流授权", style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Bold)
-                        Text("① 点开始自动打开授权页（后台轮询 180 秒，可锁屏）；若提示「参数无效」再点一次切兼容模式。", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                        Text("内嵌打开授权页，后台自动轮询（最长 240 秒）。若提示「参数无效」，重试一次自动切兼容模式。", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
                         TextButton(
-                            text = if (qoderBusy) "等待授权…" else "① 开始设备流授权",
-                            enabled = !qoderBusy,
+                            text = "打开内嵌授权页",
                             onClick = {
-                                qoderBusy = true; qoderResult = "等待授权…"
                                 scope.launch {
-                                    val r = withContext(Dispatchers.IO) { RootCtl.qoderWait(180) }
-                                    qoderBusy = false
-                                    val lines = r.stdout.lines().filter { it.trim().startsWith("{") }
-                                    val started = lines.firstOrNull()?.let {
-                                        runCatching { com.google.gson.JsonParser.parseString(it).asJsonObject }.getOrNull()
-                                    }
-                                    started?.get("auth_url")?.asString?.let { openBrowser(it) }
-                                    val j = lines.lastOrNull()?.let {
-                                        runCatching { com.google.gson.JsonParser.parseString(it).asJsonObject }.getOrNull()
-                                    }
-                                    qoderResult = when {
-                                        j?.has("ok") == true && j.get("ok").asBoolean -> "成功：${j.get("user_id")?.asString ?: ""}"
-                                        j?.has("error") == true -> j.get("error").asString
-                                        else -> r.stdout.take(200)
-                                    }
+                                    val j = withContext(Dispatchers.IO) { RootCtl.call("qoder-start").json() }
+                                    qoderUrl = j?.get("auth_url")?.asString
+                                    if (qoderUrl == null) result = "❌ 发起设备流失败" else flow = "qoder"
                                 }
                             },
                             modifier = Modifier.fillMaxWidth(),
                         )
-                        if (qoderResult.isNotEmpty()) Text(qoderResult, style = MiuixTheme.textStyles.footnote1)
                     }
                 }
             }
@@ -656,16 +674,96 @@ fun LoginPage() {
     }
 }
 
-fun openBrowser(url: String) {
-    runCatching {
-        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
-        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-        androidx.core.content.ContextCompat.startActivity(RootCtlAppContextHolder.context, intent, null)
+/** Full-screen embedded webview with a Miuix-style top bar and a finish button
+ *  for poll-based flows. Trae needs no button — the redirect intercept finishes it. */
+@Composable
+private fun EmbeddedLoginWebview(
+    url: String,
+    title: String,
+    onClose: () -> Unit,
+    onTraeCallback: (String) -> Unit,
+    onWbFinish: () -> Unit,
+    onQoderFinish: () -> Unit,
+) {
+    val isTrae = title.startsWith("Trae")
+    val isWb = title.startsWith("WorkBuddy")
+    val context = RootCtlAppContextHolder.context
+    var progress by remember(url) { mutableStateOf(0) }
+    var doneLoading by remember(url) { mutableStateOf(false) }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(text = "关闭", onClick = onClose)
+            Text(title, style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            if (!isTrae) {
+                TextButton(
+                    text = "我已登录",
+                    onClick = { if (isWb) onWbFinish() else onQoderFinish() },
+                )
+            }
+        }
+        if (!doneLoading) {
+            LinearProgressIndicator(
+                progress = if (progress in 1..99) progress / 100f else null,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        val webView = remember(url) {
+            android.webkit.WebView(context).apply {
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                settings.userAgentString = "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36"
+                webViewClient = object : android.webkit.WebViewClient() {
+                    override fun shouldOverrideUrlLoading(
+                        view: android.webkit.WebView,
+                        request: android.webkit.WebResourceRequest,
+                    ): Boolean {
+                        val u = request.url
+                        // Trae: intercept the loopback redirect — trae-callback
+                        // accepts the full URL verbatim (same finish path as trae-wait).
+                        if (u.host == "127.0.0.1" || u.host == "localhost") {
+                            onTraeCallback(u.toString())
+                            view.stopLoading()
+                            return true
+                        }
+                        return false
+                    }
+                    override fun onPageFinished(view: android.webkit.WebView, u: String?) {
+                        doneLoading = true
+                    }
+                }
+                webChromeClient = object : android.webkit.WebChromeClient() {
+                    override fun onProgressChanged(view: android.webkit.WebView?, newProgress: Int) {
+                        progress = newProgress
+                    }
+                }
+                loadUrl(url)
+            }
+        }
+        AndroidView(
+            factory = { webView },
+            modifier = Modifier.fillMaxSize(),
+        )
+        DisposableEffect(url) {
+            onDispose { webView.destroy() }
+        }
     }
 }
 
 object RootCtlAppContextHolder {
     lateinit var context: android.content.Context
+}
+
+/** Process-level data cache — tab switches render from the last fetch instead
+ *  of re-running the (slow, network-bound) module CLI each time. */
+object DataCache {
+    @Volatile var credits: CreditsSnapshot? = null
+    @Volatile var status: StatusView? = null
+    @Volatile var accounts: List<AccountRow> = emptyList()
 }
 
 // ── 日志 ─────────────────────────────────────────────────────────────────────

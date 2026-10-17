@@ -210,9 +210,9 @@ pub fn wb_credits(agent: &ureq::Agent, cfg: &AppConfig, acc: &Account) -> Credit
         row.message = "响应非 JSON".into();
         return row;
     };
-    // balance: top-level keys first, else Σ CycleRemainCapacity (source order)
-    let balance = dig(&b, &["RemainingCapacity", "remaining", "TotalRemaining", "Balance", "balance"])
-        .and_then(|v| v.as_f64())
+    // balance: top-level keys first (num_of tolerates numeric strings — WB
+    // returns "3371.00"-style strings), else Σ per-package remaining
+    let balance = num_of(dig(&b, &["RemainingCapacity", "remaining", "TotalRemaining", "Balance", "balance"]))
         .or_else(|| sum_cycle_remain(&b));
     // packages: walk dicts with remaining/total semantics
     let mut dicts = Vec::new();
@@ -240,7 +240,11 @@ pub fn wb_credits(agent: &ureq::Agent, cfg: &AppConfig, acc: &Account) -> Credit
     }
     row.ok = balance.is_some() || !packs.is_empty();
     row.message = if row.ok { String::new() } else { "响应结构未识别".into() };
-    row.balance = balance.map(r2);
+    // Dashboard consistency: when per-package rows parsed, balance = Σ packs
+    // (the top-level `remaining` key can match non-credit rate-limit fields
+    // and return a bogus 0 while real packs exist — screenshot-verified bug).
+    let pack_sum: f64 = packs.iter().filter_map(|p| p.get("remaining").and_then(|v| v.as_f64())).sum();
+    row.balance = if packs.is_empty() { balance } else { Some(pack_sum.max(balance.unwrap_or(0.0))) }.map(r2);
     row.earliest_expire = packs.iter().filter_map(|p| p.get("expire_time").and_then(|v| v.as_i64())).min();
     row.packs = packs;
     row
@@ -252,7 +256,7 @@ fn sum_cycle_remain(body: &Value) -> Option<f64> {
     let mut s = 0.0;
     let mut has = false;
     for item in dicts {
-        if let Some(v) = dig(item, &["CycleRemainCapacity", "RemainingCapacity", "remaining"]).and_then(|v| v.as_f64()) {
+        if let Some(v) = num_of(dig(item, &["CycleRemainCapacity", "RemainingCapacity", "remaining"])) {
             s += v;
             has = true;
         }

@@ -29,18 +29,45 @@ object RootCtl {
         )
     }
 
-    fun isRootAvailable(): Boolean = runCatching { Shell.getShell().isRoot }.getOrDefault(false)
+    /** Cached module state — StatusGate re-ran root probes on every tab switch
+     *  (each probe forks a su shell ≈0.5–2s, the reported "巨慢"). Cache for the
+     *  process lifetime; module install state can't change without a reboot. */
+    @Volatile var cachedRoot: Boolean? = null
+        private set
+    @Volatile var cachedModule: Boolean? = null
+        private set
+
+    fun isRootAvailable(): Boolean =
+        cachedRoot ?: runCatching { Shell.getShell().isRoot }.getOrDefault(false).also { cachedRoot = it }
 
     private fun ctlPath(): String = "/data/adb/modules/traeclock/bin/traeclockctl"
 
     fun isModuleInstalled(): Boolean =
-        runCatching {
+        cachedModule ?: runCatching {
             Shell.cmd("test -x ${ctlPath()} && echo yes").exec().out.joinToString("").contains("yes")
-        }.getOrDefault(false)
+        }.getOrDefault(false).also { cachedModule = it }
 
     fun call(vararg args: String): CtlResult {
         val quoted = args.joinToString(" ") { "'${it.replace("'", "'\\''")}'" }
         val res = Shell.cmd("${ctlPath()} $quoted").exec()
+        return CtlResult(res.code, res.out.joinToString("\n"))
+    }
+
+    /** Cached long-timeout shell for OAuth helpers (trae-wait / qoder-wait run
+     *  for minutes). libsu's default 60s timeout killed them mid-login.
+     *  Reuse one shell — spawning a fresh root shell per call costs ~1s. */
+    @Volatile private var longShell: com.topjohnwu.superuser.Shell? = null
+
+    private fun longTimeoutShell(): com.topjohnwu.superuser.Shell =
+        longShell ?: Shell.Builder.create()
+            .setFlags(Shell.FLAG_REDIRECT_STDERR)
+            .setTimeout(420)
+            .build()
+            .also { longShell = it }
+
+    fun callLong(vararg args: String): CtlResult {
+        val quoted = args.joinToString(" ") { "'${it.replace("'", "'\''")}'" }
+        val res = longTimeoutShell().newJob().add("${ctlPath()} $quoted").exec()
         return CtlResult(res.code, res.out.joinToString("\n"))
     }
 
@@ -76,7 +103,7 @@ object RootCtl {
     fun traeLoginUrl(): JsonObject? = call("trae-login-url").json()
 
     /** Listen on 127.0.0.1:17388 for the OAuth redirect; blocks until callback. */
-    fun traeWait(timeoutSecs: Int): CtlResult = call("trae-wait", timeoutSecs.toString())
+    fun traeWait(timeoutSecs: Int): CtlResult = callLong("trae-wait", timeoutSecs.toString())
 
     fun traeCallback(url: String): CtlResult = call("trae-callback", url)
 
@@ -86,5 +113,5 @@ object RootCtl {
 
     fun wbPoll(state: String): CtlResult = call("wb-poll", state)
 
-    fun qoderWait(timeoutSecs: Int): CtlResult = call("qoder-wait", timeoutSecs.toString())
+    fun qoderWait(timeoutSecs: Int): CtlResult = callLong("qoder-wait", timeoutSecs.toString())
 }
