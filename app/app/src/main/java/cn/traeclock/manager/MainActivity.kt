@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.shape.CircleShape
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.backdrop.drawBackdrop
@@ -81,8 +82,11 @@ fun TraeClockApp() {
         val tabs = listOf("主页", "账号", "登录", "日志", "设置")
         // liquid-glass bottom bar: the page content is captured into a backdrop
         // layer and refracted through the bar (Kyant0/AndroidLiquidGlass)
+        // (theme colors are @Composable reads — hoist them OUT of the DrawScope
+        // lambdas, which are plain non-composable DrawScope.() -> Unit)
+        val backdropBg = MiuixTheme.colorScheme.background
         val backdrop = rememberLayerBackdrop {
-            drawRect(MiuixTheme.colorScheme.background)
+            drawRect(backdropBg)
             drawContent()
         }
         Box(Modifier.fillMaxSize()) {
@@ -120,6 +124,8 @@ private fun GlassBottomBar(
     backdrop: com.kyant.backdrop.Backdrop,
     modifier: Modifier = Modifier,
 ) {
+    // hoisted @Composable theme reads (DrawScope lambdas are non-composable)
+    val surfaceTint = MiuixTheme.colorScheme.surface.copy(alpha = 0.5f)
     Box(
         modifier
             .padding(horizontal = 24f.dp)
@@ -135,7 +141,7 @@ private fun GlassBottomBar(
                     blur(4f.dp.toPx())
                     lens(16f.dp.toPx(), 32f.dp.toPx())
                 },
-                onDrawSurface = { drawRect(MiuixTheme.colorScheme.surface.copy(alpha = 0.5f)) },
+                onDrawSurface = { drawRect(surfaceTint) },
             ),
         contentAlignment = Alignment.Center,
     ) {
