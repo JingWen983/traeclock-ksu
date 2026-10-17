@@ -83,7 +83,7 @@ fun TraeClockApp() {
 
 /** Tab icons: tiny self-drawn vectors (no icons artifact dependency). */
 private object MiuixTabIcons {
-    private fun glyph(name: String, block: androidx.compose.ui.graphics.vector.ImageVector.Builder.() -> Unit): androidx.compose.ui.graphics.vector.ImageVector =
+    private fun glyph(name: String, block: androidx.compose.ui.graphics.vector.PathBuilder.() -> Unit): androidx.compose.ui.graphics.vector.ImageVector =
         androidx.compose.ui.graphics.vector.ImageVector.Builder(
             name = name,
             defaultWidth = 26.dp,
