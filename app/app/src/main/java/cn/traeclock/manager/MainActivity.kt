@@ -33,6 +33,9 @@ import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.path
 
 class MainActivity : ComponentActivity() {
 
@@ -78,16 +81,72 @@ fun TraeClockApp() {
     }
 }
 
-/** Tab icons: Compose material core icons (small dependency, sufficient here). */
+/** Tab icons: tiny self-drawn vectors (no icons artifact dependency). */
 private object MiuixTabIcons {
+    private fun glyph(name: String, block: androidx.compose.ui.graphics.vector.ImageVector.Builder.() -> Unit): androidx.compose.ui.graphics.vector.ImageVector =
+        androidx.compose.ui.graphics.vector.ImageVector.Builder(
+            name = name,
+            defaultWidth = 26.dp,
+            defaultHeight = 26.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f,
+        ).apply { path(fill = SolidColor(Color.Black)) { block() } }.build()
+
+    private val home by lazy {
+        glyph("TabHome") {
+            moveTo(12f, 3f); lineTo(2f, 12f); lineTo(5f, 12f); lineTo(5f, 20f); lineTo(11f, 20f)
+            lineTo(11f, 14f); lineTo(13f, 14f); lineTo(13f, 20f); lineTo(19f, 20f); lineTo(19f, 12f)
+            lineTo(22f, 12f); close()
+        }
+    }
+    private val chart by lazy {
+        glyph("TabChart") {
+            moveTo(5f, 21f); lineTo(5f, 9f); lineTo(9f, 9f); lineTo(9f, 21f); close()
+            moveTo(10f, 21f); lineTo(10f, 3f); lineTo(14f, 3f); lineTo(14f, 21f); close()
+            moveTo(15f, 21f); lineTo(15f, 13f); lineTo(19f, 13f); lineTo(19f, 21f); close()
+        }
+    }
+    private val people by lazy {
+        glyph("TabPeople") {
+            moveTo(4f, 6f); lineTo(20f, 6f); lineTo(20f, 8f); lineTo(4f, 8f); close()
+            moveTo(4f, 11f); lineTo(20f, 11f); lineTo(20f, 13f); lineTo(4f, 13f); close()
+            moveTo(4f, 16f); lineTo(14f, 16f); lineTo(14f, 18f); lineTo(4f, 18f); close()
+        }
+    }
+    private val person by lazy {
+        glyph("TabPerson") {
+            moveTo(11f, 5f); lineTo(13f, 5f); lineTo(13f, 11f); lineTo(19f, 11f); lineTo(19f, 13f)
+            lineTo(13f, 13f); lineTo(13f, 19f); lineTo(11f, 19f); lineTo(11f, 13f); lineTo(5f, 13f)
+            lineTo(5f, 11f); lineTo(11f, 11f); close()
+        }
+    }
+    private val doc by lazy {
+        glyph("TabDoc") {
+            moveTo(6f, 2f); lineTo(15f, 2f); lineTo(20f, 7f); lineTo(20f, 22f); lineTo(6f, 22f); close()
+            moveTo(14f, 3.5f); lineTo(14f, 8f); lineTo(18.5f, 8f); close()
+        }
+    }
+    private val settings by lazy {
+        glyph("TabSettings") {
+            moveTo(12f, 8f)
+            curveTo(14.2f, 8f, 16f, 9.8f, 16f, 12f)
+            curveTo(16f, 14.2f, 14.2f, 16f, 12f, 16f)
+            curveTo(9.8f, 16f, 8f, 14.2f, 8f, 12f)
+            curveTo(8f, 9.8f, 9.8f, 8f, 12f, 8f)
+            close()
+            moveTo(10.5f, 2f); lineTo(13.5f, 2f); lineTo(14f, 5f); lineTo(16.5f, 6f); lineTo(19f, 4.5f)
+            lineTo(21f, 6.5f); lineTo(19.5f, 9f); lineTo(20.5f, 11.5f); lineTo(23.5f, 12f); lineTo(23.5f, 12f)
+            lineTo(20.5f, 12.5f); lineTo(19.5f, 15f); lineTo(21f, 17.5f); lineTo(19f, 19.5f); lineTo(16.5f, 18f)
+            lineTo(14f, 19f); lineTo(13.5f, 22f); lineTo(10.5f, 22f); lineTo(10f, 19f); lineTo(7.5f, 18f)
+            lineTo(5f, 19.5f); lineTo(3f, 17.5f); lineTo(4.5f, 15f); lineTo(3.5f, 12.5f); lineTo(0.5f, 12f)
+            lineTo(3.5f, 11.5f); lineTo(4.5f, 9f); lineTo(3f, 6.5f); lineTo(5f, 4.5f); lineTo(7.5f, 6f)
+            lineTo(10f, 5f); close()
+        }
+    }
+
     val forIndex: (Int) -> androidx.compose.ui.graphics.vector.ImageVector = { index ->
         when (index) {
-            0 -> androidx.compose.material.icons.Icons.Filled.Home
-            1 -> androidx.compose.material.icons.Icons.Filled.Info
-            2 -> androidx.compose.material.icons.Icons.Filled.List
-            3 -> androidx.compose.material.icons.Icons.Filled.Add
-            4 -> androidx.compose.material.icons.Icons.Filled.DateRange
-            else -> androidx.compose.material.icons.Icons.Filled.Check
+            0 -> home; 1 -> chart; 2 -> people; 3 -> person; 4 -> doc; else -> settings
         }
     }
 }
