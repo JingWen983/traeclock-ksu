@@ -6,12 +6,12 @@ plugins {
 
 android {
     namespace = "cn.traeclock.manager"
-    compileSdk = 34
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "cn.traeclock.manager"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 37
         versionCode = 5
         versionName = "0.2.0"
     }
