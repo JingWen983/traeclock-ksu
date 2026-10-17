@@ -4,8 +4,10 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -89,11 +91,12 @@ fun TraeClockApp() {
             drawRect(backdropBg)
             drawContent()
         }
-        Box(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize().background(backdropBg)) {
             Box(
                 Modifier
                     .fillMaxSize()
                     .layerBackdrop(backdrop)
+                    .statusBarsPadding()
             ) {
                 when (tab) {
                     0 -> HomePage()
@@ -907,19 +910,22 @@ object DataCache {
  *  Falls back to the raw line for non-JSON payloads. */
 private fun formatLogLine(raw: String): String {
     val o = runCatching { com.google.gson.JsonParser.parseString(raw).asJsonObject }.getOrNull() ?: return raw
-    val ts = o.get("ts")?.asString?.take(19)?.replace('T', ' ') ?: "????-??-?? ??:??:??"
-    val type = o.get("type")?.asString ?: "event"
+    // legacy lines (pre-0.2.3 daemon) carry no ts — show them undated instead
+    // of a "????-??-??" placeholder (user complaint: 问号)
+    val ts = o.get("ts")?.takeIf { it.isJsonPrimitive }?.asString?.take(19)?.replace('T', ' ')
+    val type = o.get("type")?.takeIf { it.isJsonPrimitive }?.asString ?: "event"
     val details = o.entrySet()
         .filter { it.key !in setOf("type", "ts") }
         .joinToString(" ") { (k, v) ->
             val value = when {
                 v.isJsonNull -> "-"
                 v.isJsonObject || v.isJsonArray -> "…"
+                !v.isJsonPrimitive -> "…"
                 else -> v.asString.ifEmpty { "-" }
             }
             "$k=$value"
         }
-    return "[$ts] [$type] $details"
+    return (if (ts != null) "[$ts] " else "") + "[$type] $details"
 }
 
 @Composable
@@ -941,8 +947,16 @@ fun LogPage() {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 96.dp)) {
                 items(lines.reversed()) { raw ->
                     // render "[ts] line": extract the ts field from the NDJSON event
+                    // color pinned to theme onSurface (default Text uses onPrimary,
+                    // invisible on the theme background in dark mode — user complaint)
                     val line = formatLogLine(raw)
-                    Text(line, style = MiuixTheme.textStyles.footnote2, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(vertical = 1.dp))
+                    Text(
+                        line,
+                        style = MiuixTheme.textStyles.footnote2,
+                        fontFamily = FontFamily.Monospace,
+                        color = MiuixTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(vertical = 1.dp),
+                    )
                 }
                 if (lines.isEmpty()) item { Text("暂无日志（等待守护进程执行签到）", style = MiuixTheme.textStyles.body2) }
             }
