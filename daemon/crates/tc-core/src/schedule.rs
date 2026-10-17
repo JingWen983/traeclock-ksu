@@ -94,10 +94,19 @@ fn jitter_pick_min(_cfg: &AppConfig, date: &str, app: &str, start_min: u32, end_
     start_min + v % span
 }
 
+/// Public per-day pick: the minute-of-day this app should run on `date`.
+/// jitter off → window start; jitter on → deterministic per (date, app).
+pub fn pick_min_for_day(cfg: &AppConfig, date: &str, app: &str) -> u32 {
+    if cfg.jitter {
+        jitter_pick_min(cfg, date, app, cfg.window_start_min, cfg.window_end_min)
+    } else {
+        cfg.window_start_min
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::NaiveDate as _NaiveDate;
 
     fn at(y: i32, m: u32, d: u32, h: u32, min: u32) -> DateTime<Local> {
         Local

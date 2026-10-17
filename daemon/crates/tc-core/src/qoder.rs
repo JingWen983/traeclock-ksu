@@ -9,8 +9,10 @@
 //! win over derived ones whenever present, and each account keeps ONE stable
 //! device profile forever (never regenerate on failure).
 
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::Digest as _;
 
 use crate::config::AppConfig;
 use crate::envelope::dig;
@@ -28,8 +30,8 @@ pub const CLIENT_COSY_VERSION: &str = "0.4.3";
 pub const CLIENT_MACHINE_OS_ANDROID: &str = "aarch64_android";
 pub const CLIENT_MACHINE_OS_DESKTOP: &str = "x86_64_win32";
 
-/// Poll tuning (device-flow OAuth, port of qoder_oauth constants).
-pub const POLL_INTERVAL_MS: u64 = 3_000;
+/// Poll tuning (device-flow OAuth; 1s interval per the R-10 capture).
+pub const POLL_INTERVAL_MS: u64 = 1_000;
 pub const POLL_TIMEOUT_MS: u64 = 180_000;
 
 // ── creds & device profile ──────────────────────────────────────────────────
@@ -42,6 +44,11 @@ pub struct QoderCreds {
     pub refresh_token: String,
     #[serde(default)]
     pub expires_at_ms: Option<i64>,
+    #[serde(default)]
+    pub refresh_expires_at_ms: Option<i64>,
+    /// 凭证种类：client（设备流抓包同款）
+    #[serde(default)]
+    pub kind: String,
     #[serde(default)]
     pub machine_id: String,
     #[serde(default)]
@@ -59,6 +66,8 @@ impl QoderCreds {
             access_token: dig(&v, &["access_token", "accessToken"]).and_then(|x| x.as_str()).unwrap_or("").into(),
             refresh_token: dig(&v, &["refresh_token", "refreshToken"]).and_then(|x| x.as_str()).unwrap_or("").into(),
             expires_at_ms: dig(&v, &["expires_at_ms", "expiresAtMs"]).and_then(|x| x.as_i64()),
+            refresh_expires_at_ms: dig(&v, &["refresh_expires_at_ms", "refreshExpiresAtMs"]).and_then(|x| x.as_i64()),
+            kind: dig(&v, &["kind"]).and_then(|x| x.as_str()).unwrap_or("").into(),
             machine_id: dig(&v, &["machine_id", "machineId"]).and_then(|x| x.as_str()).unwrap_or("").into(),
             machine_token: dig(&v, &["machine_token", "machineToken"]).and_then(|x| x.as_str()).unwrap_or("").into(),
             uid: dig(&v, &["uid", "userId"]).and_then(|x| x.as_str()).unwrap_or("").into(),
@@ -202,84 +211,147 @@ pub fn need_refresh(creds: &QoderCreds, now_ms: i64) -> bool {
     }
 }
 
-// ── device-flow OAuth (port of commands/qoder/oauth + tasks/qoder_oauth) ────
+// ── device-flow OAuth (byte-faithful port of tasks/qoder_oauth.rs,
+//    R-10 packet capture 2026-09-27) ─────────────────────────────────────────
 
+/// 授权页基址
+pub const DEVICE_AUTH_BASE: &str = "https://qoder.cn/device/selectAccounts";
+/// 授权页 client_id（官方注册常量，新版 Qoder CN 客户端 authClientIds.prod）。
+/// 随机 client_id 会被授权页判「参数无效」；compat 模式省略该参数（社区实现同款）。
+pub const DEVICE_AUTH_CLIENT_ID: &str = "732aef47-9cf2-46a2-95fe-4cebb5d0d1fa";
+
+/// expires_in 归一：>2_592_000（30 天秒数）视为毫秒原样，否则视为秒 ×1000
+pub fn normalize_expires_in(e: i64) -> i64 {
+    if e > 2_592_000 {
+        e
+    } else {
+        e * 1000
+    }
+}
+
+/// 一次设备流会话（nonce/verifier/machine_id 全程自持，与源码同构）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceFlow {
-    pub auth_url: String,
-    #[serde(default)]
-    pub poll_url: String,
-    #[serde(default)]
     pub nonce: String,
+    pub verifier: String,
+    pub machine_id: String,
+    /// compat 模式（None）时不携带 client_id
+    pub client_id: Option<String>,
+    /// 授权页完整 URL（challenge = BASE64URL_NO_PAD(SHA256(verifier))）
+    pub auth_url: String,
 }
 
-/// Initiate a device flow: request start endpoint, return auth URL + poll target.
-/// `compat` switches to the compat variant (used automatically after a
-/// "参数无效" page failure, mirroring the source's retry behavior).
-pub fn device_flow_start(agent: &ureq::Agent, compat: bool) -> Result<DeviceFlow, String> {
-    let path = if compat { "/device/oauth/start?compat=1" } else { "/device/oauth/start" };
-    let (status, body, raw) = http::post_json(agent, &format!("{OPEN_API_BASE}{path}"), &[], &json!({}));
-    if status != 200 {
-        return Err(format!("device flow start 失败（HTTP {status}）: {}", truncate(&raw, 120)));
+fn new_uuid_v4() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+fn uuid_v4_simple() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
+impl DeviceFlow {
+    /// 常规模式：携带官方注册固定 client_id（与真实客户端跳转逐字一致）
+    pub fn new() -> Self {
+        Self::build(true)
     }
-    let b = body.ok_or("device flow start 响应非 JSON")?;
-    let auth_url = dig(&b, &["authUrl", "auth_url", "verification_uri"])
-        .and_then(|v| v.as_str())
-        .ok_or("device flow start 响应缺少 authUrl")?
-        .to_string();
-    Ok(DeviceFlow {
-        auth_url,
-        poll_url: dig(&b, &["pollUrl", "poll_url"])
-            .and_then(|v| v.as_str())
-            .unwrap_or(&format!("{OPEN_API_BASE}/device/oauth/poll"))
-            .to_string(),
-        nonce: dig(&b, &["nonce"]).and_then(|v| v.as_str()).unwrap_or("").to_string(),
-    })
-}
 
-/// One poll: 404 = pending, 200 = parse success (nonce-verified), other = keep polling.
-pub fn device_flow_poll_once(agent: &ureq::Agent, flow: &DeviceFlow) -> (i32, Option<Value>) {
-    let mut h: Vec<(String, String)> = vec![
-        ("Content-Type".to_string(), "application/json".to_string()),
-        ("User-Agent".to_string(), CLIENT_USER_AGENT.to_string()),
-    ];
-    if !flow.nonce.is_empty() {
-        h.push(("X-Device-Nonce".to_string(), flow.nonce.clone()));
+    /// 兼容模式：不带 client_id（官方常量被轮换导致「参数无效」时的恢复路径）
+    pub fn new_compat() -> Self {
+        Self::build(false)
     }
-    let (status, body, _raw) = http::post_json(agent, &flow.poll_url, &h, &json!({}));
-    (status, body)
-}
 
-/// Verify the poll success body belongs to this session (nonce echo) and
-/// extract credentials (port of `parse_poll_success`).
-pub fn parse_poll_success(body: &Value, expected_nonce: &str) -> Option<(QoderCreds, String)> {
-    if !expected_nonce.is_empty() {
-        let echo = dig(body, &["nonce"]).and_then(|v| v.as_str()).unwrap_or("");
-        if echo != expected_nonce {
-            return None;
+    fn build(with_client_id: bool) -> Self {
+        // verifier：双 uuid v4 simple 拼接 = 64 hex 字符（源码同款）
+        let verifier = format!("{}{}", uuid_v4_simple(), uuid_v4_simple());
+        let nonce = new_uuid_v4();
+        let machine_id = new_uuid_v4();
+        let client_id = with_client_id.then(|| DEVICE_AUTH_CLIENT_ID.to_string());
+        // challenge：BASE64URL_NO_PAD(SHA256(verifier))（PKCE S256）
+        let digest = sha2::Sha256::digest(verifier.as_bytes());
+        let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest);
+        let mut url = format!(
+            "{DEVICE_AUTH_BASE}?challenge={challenge}&challenge_method=S256&nonce={nonce}&machine_id={machine_id}"
+        );
+        if let Some(cid) = &client_id {
+            url.push_str(&format!("&client_id={cid}"));
         }
+        Self { nonce, verifier, machine_id, client_id, auth_url: url }
     }
-    let token = dig(body, &["accessToken", "access_token"]).and_then(|v| v.as_str())?;
-    if token.is_empty() {
+}
+
+impl Default for DeviceFlow {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// verifier 进 query 前的最小转义（正常为纯 hex，仅防御性兜底，源码同款）
+fn urlencode(s: &str) -> String {
+    s.replace('%', "%25")
+        .replace(' ', "%20")
+        .replace('&', "%26")
+        .replace('=', "%3D")
+        .replace('~', "%7E")
+}
+
+/// 单次轮询：GET /api/v1/deviceToken/poll（无 Authorization 头，与客户端一致）。
+/// pending = HTTP 404 {"errorCode":"NotFound"}；成功 = HTTP 200。
+pub fn device_flow_poll_once(agent: &ureq::Agent, flow: &DeviceFlow) -> (i32, Option<Value>) {
+    let url = format!(
+        "{}/api/v1/deviceToken/poll?nonce={}&verifier={}&challenge_method=S256",
+        OPEN_API_BASE,
+        flow.nonce,
+        urlencode(&flow.verifier)
+    );
+    let headers = vec![
+        ("User-Agent".to_string(), CLIENT_USER_AGENT.to_string()),
+        ("Accept".to_string(), "application/json".to_string()),
+    ];
+    let (status, parsed, _raw) = http::get_json(agent, &url, &headers);
+    (status, parsed)
+}
+
+/// 轮询成功响应 → (凭证, uid)。
+/// nonce 回验：响应 nonce 与本会话 flow.nonce 必须一致（防会话混淆）；
+/// token 候选 token/accessToken/access_token（dt- 前缀）；
+/// expires_in 毫秒级归一（2591999999 ≈ 30d），refresh_token_expires_in ≈360d。
+pub fn parse_poll_success(body: &Value, expected_nonce: &str) -> Option<(QoderCreds, String)> {
+    let resp_nonce = dig(body, &["nonce"]).and_then(|v| v.as_str()).unwrap_or("");
+    if resp_nonce != expected_nonce {
         return None;
     }
-    let uid = dig(body, &["uid", "userId", "user_id"])
+    let token = dig(body, &["token", "accessToken", "access_token"])
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let mut creds = QoderCreds {
-        access_token: token.to_string(),
-        refresh_token: dig(body, &["refreshToken", "refresh_token"]).and_then(|v| v.as_str()).unwrap_or("").into(),
-        expires_at_ms: dig(body, &["expiresIn", "expires_in"]).and_then(|v| v.as_i64()).map(|s| chrono::Utc::now().timestamp_millis() + s * 1000),
-        machine_id: dig(body, &["machineId", "machine_id"]).and_then(|v| v.as_str()).unwrap_or("").into(),
-        machine_token: dig(body, &["machineToken", "machine_token"]).and_then(|v| v.as_str()).unwrap_or("").into(),
-        uid: uid.clone(),
-        nickname: dig(body, &["nickname"]).and_then(|v| v.as_str()).unwrap_or("").into(),
-    };
-    if creds.machine_id.is_empty() {
-        creds.machine_id = sha256_hex(&format!("qoder-mid:{uid}"))[..24].to_string();
+    if token.is_empty() {
+        return None;
     }
-    Some((creds, uid))
+    let uid = dig(body, &["user_id", "userId", "uid"])
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let expires_at_ms = dig(body, &["expires_in", "expiresIn"])
+        .and_then(|v| v.as_i64().or_else(|| v.as_str()?.trim().parse::<i64>().ok()))
+        .map(|e| now_ms + normalize_expires_in(e));
+    let refresh_expires_at_ms = dig(body, &["refresh_token_expires_in", "refreshTokenExpiresIn"])
+        .and_then(|v| v.as_i64().or_else(|| v.as_str()?.trim().parse::<i64>().ok()))
+        .map(|e| now_ms + normalize_expires_in(e));
+    let refresh_token =
+        dig(body, &["refresh_token", "refreshToken"]).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    Some((
+        QoderCreds {
+            access_token: token,
+            refresh_token,
+            expires_at_ms,
+            refresh_expires_at_ms,
+            kind: "client".into(),
+            uid: uid.clone(),
+            ..Default::default()
+        },
+        uid,
+    ))
 }
 
 fn truncate(s: &str, n: usize) -> String {
@@ -506,24 +578,69 @@ mod tests {
     }
 
     #[test]
-    fn poll_success_nonce_guard() {
-        let body = json!({
-            "nonce": "n-1",
-            "accessToken": "tok",
-            "uid": "u1",
-            "expiresIn": 3600
-        });
-        let (creds, uid) = parse_poll_success(&body, "n-1").unwrap();
-        assert_eq!(uid, "u1");
-        assert_eq!(creds.access_token, "tok");
-        assert!(creds.expires_at_ms.is_some());
-        // wrong nonce → rejected
-        assert!(parse_poll_success(&body, "other").is_none());
-        // no nonce expected → accepted
-        assert!(parse_poll_success(&body, "").is_some());
-        // missing token → rejected
-        let bad = json!({"nonce": "n-1"});
-        assert!(parse_poll_success(&bad, "n-1").is_none());
+    fn poll_success_maps_captured_shape() {
+        // R-10 capture sample (tokens redacted), source-locked shape
+        let body: Value = serde_json::from_str(
+            r#"{"id":"01a0e03b-5f90-73b8-958e-443488ccf81e","token":"dt-placeholder","user_id":"01a0dff8-cc47-7b64-bd6d-d9cb2aea6792","code_challenge":"kiGczYiWCRH2Csra26Fx4NlhHp2n2CLT8QhMD678dqQ","code_challenge_method":"S256","nonce":"8872dcb1-d9c6-4453-bfb6-3bcbe9b0500b","expires_at":"2026-10-27T00:19:42Z","refresh_token_id":"01a0e03b-5f8f-7e4c-b112-1de3f25908cd","created_at":"2026-09-27T00:19:42Z","updated_at":"2026-09-27T00:19:42Z","refresh_token":"rt-placeholder","expires_in":2591999999,"refresh_token_expires_in":31103999999,"refresh_token_expires_at":"2027-09-22T00:19:42Z"}"#,
+        )
+        .unwrap();
+        let (creds, uid) =
+            parse_poll_success(&body, "8872dcb1-d9c6-4453-bfb6-3bcbe9b0500b").unwrap();
+        assert_eq!(creds.access_token, "dt-placeholder");
+        assert_eq!(creds.kind, "client");
+        assert_eq!(uid, "01a0dff8-cc47-7b64-bd6d-d9cb2aea6792");
+        // ≈30 天（毫秒级原样归一）
+        let now = chrono::Utc::now().timestamp_millis();
+        let days = (creds.expires_at_ms.unwrap() - now) as f64 / 86_400_000.0;
+        assert!((29.0..=31.0).contains(&days));
+        // refresh_token_expires_in=31103999999 ms ≈360 天
+        let rt_days = (creds.refresh_expires_at_ms.unwrap() - now) as f64 / 86_400_000.0;
+        assert!((350.0..=370.0).contains(&rt_days));
+    }
+
+    #[test]
+    fn poll_success_rejects_pending_and_nonce_mismatch() {
+        // pending shape (404 body)
+        let pending: Value =
+            serde_json::from_str(r#"{"errorCode":"NotFound","errorMessage":"Not found"}"#).unwrap();
+        assert!(parse_poll_success(&pending, "n").is_none());
+        // nonce mismatch must be rejected (session-confusion guard)
+        let body = json!({"token":"dt-x","user_id":"u1","nonce":"session-a","expires_in":2591999999i64});
+        assert!(parse_poll_success(&body, "session-a").is_some());
+        assert!(parse_poll_success(&body, "session-b").is_none());
+    }
+
+    #[test]
+    fn device_flow_shape_matches_source() {
+        let f1 = DeviceFlow::new();
+        let f2 = DeviceFlow::new();
+        assert_ne!(f1.nonce, f2.nonce);
+        assert_ne!(f1.verifier, f2.verifier);
+        assert_eq!(f1.verifier.len(), 64);
+        assert!(f1.auth_url.starts_with(DEVICE_AUTH_BASE));
+        for key in ["challenge=", "challenge_method=S256", "nonce=", "machine_id=", "client_id="] {
+            assert!(f1.auth_url.contains(key), "auth_url 缺少 {key}");
+        }
+        assert!(f1.auth_url.contains(&format!("client_id={DEVICE_AUTH_CLIENT_ID}")));
+        // 不携带 directLogin：官方客户端与社区实现均不发送该参数
+        assert!(!f1.auth_url.contains("directLogin"));
+        // challenge 可由 verifier 复算（S256 绑定）
+        let expect = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(sha2::Sha256::digest(f1.verifier.as_bytes()));
+        assert!(f1.auth_url.contains(&format!("challenge={expect}")));
+        // compat 模式不带 client_id
+        let fc = DeviceFlow::new_compat();
+        assert!(fc.client_id.is_none());
+        assert!(!fc.auth_url.contains("client_id="));
+    }
+
+    #[test]
+    fn normalize_expires_in_ms_and_seconds() {
+        // 阈值边界：30 天秒级恰为分界（>2_592_000 判毫秒原样），其下判秒级 ×1000
+        assert_eq!(normalize_expires_in(2_592_000), 2_592_000_000);
+        assert_eq!(normalize_expires_in(2_592_001), 2_592_001);
+        assert_eq!(normalize_expires_in(3600), 3_600_000);
+        assert_eq!(normalize_expires_in(2591999999), 2591999999);
     }
 
     #[test]

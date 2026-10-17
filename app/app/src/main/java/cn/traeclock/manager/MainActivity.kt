@@ -215,8 +215,6 @@ fun AssistChipLabel(text: String, warn: Boolean = false) {
 @Composable
 fun LoginPage() {
     val scope = rememberCoroutineScope()
-    var traeUrl by remember { mutableStateOf<String?>(null) }
-    var traeState by remember { mutableStateOf(false) }
     var traeResult by remember { mutableStateOf("") }
     var callbackInput by remember { mutableStateOf("") }
 
@@ -233,30 +231,40 @@ fun LoginPage() {
         // Trae
         Card { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Trae · OAuth 授权登录", fontWeight = FontWeight.Bold)
-            Text("点击生成授权链接 → 在浏览器完成登录 → 复制浏览器最终跳转的 127.0.0.1 回调地址粘贴到下方。", fontSize = 12.sp)
-            Button(onClick = {
+            Text("① 点开始 → 自动打开浏览器并监听回调；② 在浏览器完成登录，最终页面提示「登录信息已接收」；③ 回到 App 看结果。", fontSize = 12.sp)
+            var traeBusy by remember { mutableStateOf(false) }
+            Button(enabled = !traeBusy, onClick = {
+                traeBusy = true; traeResult = ""
                 scope.launch {
-                    val j = withContext(Dispatchers.IO) { RootCtl.traeLoginUrl() }
-                    traeUrl = j?.get("url")?.asString
-                    traeState = j != null
-                    traeUrl?.let { openBrowser(it) }
-                }
-            }) { Text("① 生成并打开授权页") }
-            if (traeUrl != null) {
-                OutlinedTextField(
-                    value = callbackInput,
-                    onValueChange = { callbackInput = it },
-                    label = { Text("② 粘贴回调 URL (127.0.0.1:17388/authorize?…)") },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Button(enabled = callbackInput.contains("127.0.0.1"), onClick = {
-                    scope.launch {
-                        val r = withContext(Dispatchers.IO) { RootCtl.traeCallback(callbackInput.trim()) }
-                        traeResult = r.json()?.get("ok")?.asBoolean?.toString() ?: r.stdout.take(200)
+                    // start the loopback listener FIRST, then open the browser;
+                    // trae-wait blocks until the callback (max 300s)
+                    val waitJob = launch(Dispatchers.IO) { RootCtl.traeWait(300) }
+                    withContext(Dispatchers.IO) {
+                        RootCtl.traeLoginUrl()?.get("url")?.asString?.let { openBrowser(it) }
                     }
-                }) { Text("③ 完成登录") }
-            }
+                    val r = waitJob.join(); traeBusy = false
+                    val j = runCatching { com.google.gson.JsonParser.parseString(r.stdout).asJsonObject }.getOrNull()
+                    traeResult = when {
+                        j?.has("ok") == true && j.get("ok").asBoolean -> "成功：${j.get("user_id")?.asString ?: ""}"
+                        j?.has("error") == true -> j.get("error").asString
+                        else -> r.stdout.take(200)
+                    }
+                }
+            }) { Text(if (traeBusy) "等待回调中…" else "① 开始登录（自动接收回调）") }
             if (traeResult.isNotEmpty()) Text("结果: $traeResult", fontSize = 12.sp)
+            Text("备用：若自动接收失败，复制浏览器最终 127.0.0.1 页面地址到下面手动完成。", fontSize = 11.sp)
+            OutlinedTextField(
+                value = callbackInput,
+                onValueChange = { callbackInput = it },
+                label = { Text("手动粘贴回调 URL（备用）") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Button(enabled = callbackInput.contains("127.0.0.1"), onClick = {
+                scope.launch {
+                    val r = withContext(Dispatchers.IO) { RootCtl.traeCallback(callbackInput.trim()) }
+                    traeResult = r.json()?.get("ok")?.asBoolean?.let { "成功" } ?: r.stdout.take(200)
+                }
+            }) { Text("手动完成登录") }
         } }
 
         // WorkBuddy
@@ -290,13 +298,27 @@ fun LoginPage() {
         // Qoder
         Card { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Qoder · 设备流授权", fontWeight = FontWeight.Bold)
-            Text("点击后自动打开授权页并在后台轮询（最长 180 秒），可锁屏等待。", fontSize = 12.sp)
+            Text("① 点开始 → 自动打开 qoder.cn 授权页（App 后台每秒轮询，最长 180 秒）；② 在浏览器完成授权；③ 可锁屏等待，回 App 看结果。若提示「参数无效」请再点一次（自动切换兼容模式）。", fontSize = 12.sp)
             Button(enabled = !qoderBusy, onClick = {
                 qoderBusy = true; qoderResult = "等待授权…"
                 scope.launch {
                     val r = withContext(Dispatchers.IO) { RootCtl.qoderWait(180) }
                     qoderBusy = false
-                    qoderResult = r.json()?.get("user_id")?.asString?.let { "成功：$it" } ?: r.stdout.take(200)
+                    // trae-wait style: first line is {"stage":"started","auth_url":...},
+                    // last line is the result object
+                    val lines = r.stdout.lines().filter { it.trim().startsWith("{") }
+                    val started = lines.firstOrNull()?.let {
+                        runCatching { com.google.gson.JsonParser.parseString(it).asJsonObject }.getOrNull()
+                    }
+                    started?.get("auth_url")?.asString?.let { openBrowser(it) }
+                    val j = lines.lastOrNull()?.let {
+                        runCatching { com.google.gson.JsonParser.parseString(it).asJsonObject }.getOrNull()
+                    }
+                    qoderResult = when {
+                        j?.has("ok") == true && j.get("ok").asBoolean -> "成功：${j.get("user_id")?.asString ?: ""}"
+                        j?.has("error") == true -> j.get("error").asString
+                        else -> r.stdout.take(200)
+                    }
                 }
             }) { Text(if (qoderBusy) "等待授权…" else "① 开始设备流授权") }
             if (qoderResult.isNotEmpty()) Text(qoderResult, fontSize = 12.sp)

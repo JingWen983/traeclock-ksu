@@ -72,6 +72,9 @@ object RootCtl {
 
     fun traeLoginUrl(): JsonObject? = call("trae-login-url").json()
 
+    /** Listen on 127.0.0.1:17388 for the OAuth redirect; blocks until callback. */
+    fun traeWait(timeoutSecs: Int): CtlResult = call("trae-wait", timeoutSecs.toString())
+
     fun traeCallback(url: String): CtlResult = call("trae-callback", url)
 
     fun traeRefresh(uid: String): CtlResult = call("trae-refresh", uid)

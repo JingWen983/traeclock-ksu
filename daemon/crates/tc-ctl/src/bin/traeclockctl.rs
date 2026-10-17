@@ -59,7 +59,8 @@ fn main() {
         Some("log") => cmd_log(&store, args.get(1)),
         Some("checkin-log") => cmd_checkin_log(&store),
         Some("trae-login-url") => cmd_trae_login_url(&store),
-        Some("trae-callback") => cmd_trae_callback(&store, args.get(1).map(String::as_str)),
+        Some("trae-wait") => cmd_trae_wait(args.get(1).map(|s| s.as_str())),
+        Some("trae-callback") => cmd_trae_callback(&store, args.get(1).map(|s| s.as_str())),
         Some("trae-refresh") => cmd_trae_refresh(&store, args.get(1).map(String::as_str)),
         Some("wb-start") => cmd_wb_start(&store),
         Some("wb-poll") => cmd_wb_poll(&store, args.get(1).map(String::as_str)),
@@ -672,33 +673,42 @@ fn cmd_wb_poll(store: &Store, state_id: Option<&str>) -> i32 {
     ok_json(serde_json::json!({ "ok": true, "pending": false, "user_id": uid, "name": nickname }))
 }
 
-// ── Qoder device flow ────────────────────────────────────────────────────────
+// ── Qoder device flow (byte-faithful: local PKCE session, no start endpoint) ─
 
 fn cmd_qoder_start(compat: Option<&str>) -> i32 {
-    let agent = tc_core::http::agent(15);
-    match tc_core::qoder::device_flow_start(&agent, compat.map(|s| s == "compat").unwrap_or(false)) {
-        Ok(flow) => ok_json(serde_json::json!({
-            "ok": true, "auth_url": flow.auth_url, "poll_url": flow.poll_url, "nonce": flow.nonce,
-        })),
-        Err(e) => err_json(e),
+    // The device flow session is generated LOCALLY (nonce/verifier/machine_id),
+    // exactly like the source: there is no server-side start endpoint.
+    let flow = match compat {
+        Some("compat") => tc_core::qoder::DeviceFlow::new_compat(),
+        _ => tc_core::qoder::DeviceFlow::new(),
+    };
+    // persist the session so a separate qoder-poll/qoder-wait call can resume it
+    if let Err(e) = store_at_data_dir().save_json("qoder_pending_flow.json", &flow) {
+        return err_json(e);
     }
+    ok_json(serde_json::json!({
+        "ok": true, "auth_url": flow.auth_url, "nonce": flow.nonce,
+    }))
 }
 
 fn cmd_qoder_wait(timeout: Option<&str>) -> i32 {
     let timeout_s: u64 = timeout.and_then(|s| s.parse().ok()).unwrap_or(180);
-    let agent = tc_core::http::agent(15);
-    let flow = match tc_core::qoder::device_flow_start(&agent, false) {
-        Ok(f) => f,
-        Err(_) => {
-            // compat fallback (mirror the source's automatic retry behavior)
-            match tc_core::qoder::device_flow_start(&agent, true) {
-                Ok(f) => f,
-                Err(e) => return err_json(e),
-            }
-        }
-    };
-    println!("{}", serde_json::json!({ "ok": true, "stage": "started", "auth_url": flow.auth_url }));
+    let store = store_at_data_dir();
+    // resume a persisted session (from qoder-start) or create one now
+    let mut flow: tc_core::qoder::DeviceFlow = store
+        .read_json_opt("qoder_pending_flow.json")
+        .unwrap_or_else(tc_core::qoder::DeviceFlow::new);
+    // automatic compat fallback: if a previous normal-mode attempt hit the
+    // authorization page's 「参数无效」 (caller passes "compat"), switch mode
+    if std::env::args().any(|a| a == "compat") {
+        flow = tc_core::qoder::DeviceFlow::new_compat();
+    }
+    println!(
+        "{}",
+        serde_json::json!({ "ok": true, "stage": "started", "auth_url": flow.auth_url })
+    );
     let _ = std::io::stdout().flush();
+    let agent = tc_core::http::agent(15);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_s);
     loop {
         if std::time::Instant::now() > deadline {
@@ -707,47 +717,14 @@ fn cmd_qoder_wait(timeout: Option<&str>) -> i32 {
         std::thread::sleep(std::time::Duration::from_millis(tc_core::qoder::POLL_INTERVAL_MS));
         let (status, body) = tc_core::qoder::device_flow_poll_once(&agent, &flow);
         match status {
+            // pending: HTTP 404 {"errorCode":"NotFound"} (R-10 capture)
             404 => continue,
             200 => {
                 let Some(b) = body else { return err_json("授权响应非 JSON".into()) };
                 let Some((creds, uid)) = tc_core::qoder::parse_poll_success(&b, &flow.nonce) else {
                     return err_json("授权响应校验失败（nonce 不匹配或缺少令牌字段）".into());
                 };
-                let data_dir = data_dir();
-                let store = Store::new(&data_dir);
-                let mut file = store.accounts();
-                let now = tc_core::util::now_iso_local();
-                let profile = tc_core::qoder::DeviceProfile::generate(&uid);
-                let mut creds = creds;
-                if creds.machine_id.is_empty() {
-                    creds.machine_id = profile.machine_code.clone();
-                }
-                if let Some(existing) = file
-                    .accounts
-                    .iter_mut()
-                    .find(|a| a.app == APP_QODER && a.user_id == uid)
-                {
-                    existing.qoder_creds = Some(creds.to_value());
-                    existing.qoder_device_profile =
-                        Some(serde_json::to_value(&profile).unwrap_or_default());
-                    existing.needs_relogin = false;
-                    existing.updated_at = Some(now);
-                } else {
-                    file.accounts.push(Account {
-                        app: APP_QODER.into(),
-                        user_id: uid.clone(),
-                        name: if creds.nickname.is_empty() { uid.clone() } else { creds.nickname.clone() },
-                        enabled: true,
-                        qoder_creds: Some(creds.to_value()),
-                        qoder_device_profile: Some(serde_json::to_value(&profile).unwrap_or_default()),
-                        created_at: Some(now),
-                        ..Default::default()
-                    });
-                }
-                if let Err(e) = store.save_accounts(&file) {
-                    return err_json(e);
-                }
-                return ok_json(serde_json::json!({ "ok": true, "user_id": uid }));
+                return qoder_store_creds(&store, creds, uid);
             }
             400 | 401 | 403 | 410 => {
                 let msg = body
@@ -759,6 +736,186 @@ fn cmd_qoder_wait(timeout: Option<&str>) -> i32 {
             _ => continue,
         }
     }
+}
+
+fn qoder_store_creds(store: &Store, creds: tc_core::qoder::QoderCreds, uid: String) -> i32 {
+    let mut file = store.accounts();
+    let now = tc_core::util::now_iso_local();
+    let profile = tc_core::qoder::DeviceProfile::generate(&uid);
+    let mut creds = creds;
+    if creds.machine_id.is_empty() {
+        creds.machine_id = profile.machine_code.clone();
+    }
+    if let Some(existing) = file
+        .accounts
+        .iter_mut()
+        .find(|a| a.app == APP_QODER && a.user_id == uid)
+    {
+        existing.qoder_creds = Some(creds.to_value());
+        existing.qoder_device_profile = Some(serde_json::to_value(&profile).unwrap_or_default());
+        existing.needs_relogin = false;
+        existing.updated_at = Some(now);
+    } else {
+        file.accounts.push(Account {
+            app: APP_QODER.into(),
+            user_id: uid.clone(),
+            name: if creds.nickname.is_empty() { uid.clone() } else { creds.nickname.clone() },
+            enabled: true,
+            qoder_creds: Some(creds.to_value()),
+            qoder_device_profile: Some(serde_json::to_value(&profile).unwrap_or_default()),
+            created_at: Some(now),
+            ..Default::default()
+        });
+    }
+    if let Err(e) = store.save_accounts(&file) {
+        return err_json(e);
+    }
+    ok_json(serde_json::json!({ "ok": true, "user_id": uid }))
+}
+
+fn store_at_data_dir() -> Store {
+    Store::new(&data_dir())
+}
+
+// ── Trae loopback callback receiver (the missing piece for mobile login) ─────
+
+/// Listen on 127.0.0.1:17388 for the OAuth redirect, print a one-line status,
+/// then finish the login exactly like `trae-callback <url>`.
+/// The browser lands on `http://127.0.0.1:17388/authorize?refreshToken=…`;
+/// we answer 302 to a local success page and complete the flow.
+fn cmd_trae_wait(timeout: Option<&str>) -> i32 {
+    use std::net::TcpListener;
+    let timeout_s: u64 = timeout.and_then(|s| s.parse().ok()).unwrap_or(300);
+    let listener = match TcpListener::bind(("127.0.0.1", tc_core::trae_oauth::LOOPBACK_PORT)) {
+        Ok(l) => l,
+        Err(e) => return err_json(format!("监听 127.0.0.1:{} 失败（端口被占用?）: {e}", tc_core::trae_oauth::LOOPBACK_PORT)),
+    };
+    println!(
+        "{}",
+        serde_json::json!({ "ok": true, "stage": "listening", "port": tc_core::trae_oauth::LOOPBACK_PORT })
+    );
+    let _ = std::io::stdout().flush();
+    listener.set_nonblocking(true).ok();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_s);
+    loop {
+        if std::time::Instant::now() > deadline {
+            return err_json("等待回调超时：请确认在浏览器完成了登录并允许跳转 127.0.0.1".into());
+        }
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                // read until end of headers (the request line carries the callback)
+                let mut buf = [0u8; 8192];
+                let mut req = Vec::new();
+                stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok();
+                loop {
+                    match std::io::Read::read(&mut stream, &mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            req.extend_from_slice(&buf[..n]);
+                            if req.windows(4).any(|w| w == b"\r\n\r\n") || req.len() > 16384 {
+                                break;
+                            }
+                        }
+                    }
+                }
+                let req_text = String::from_utf8_lossy(&req);
+                // request line: GET /authorize?refreshToken=... HTTP/1.1
+                let target = req_text
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("")
+                    .to_string();
+                let full_url = format!("http://127.0.0.1:{}{target}", tc_core::trae_oauth::LOOPBACK_PORT);
+                // friendly browser page
+                let body = "<html><body style='font-family:sans-serif;text-align:center;padding-top:80px'><h2>✅ 登录信息已接收</h2><p>可以关闭此页面，回到 TraeClock 查看结果。</p></body></html>";
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                drop(stream);
+                let has_params = full_url.contains("refreshToken=") || full_url.contains("code=");
+                if !has_params {
+                    continue; // favicon or stray request; keep listening
+                }
+                let store = store_at_data_dir();
+                return finish_trae_login(&store, &full_url);
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(e) => return err_json(format!("accept 失败: {e}")),
+        }
+    }
+}
+
+/// Shared finish path for trae-callback and trae-wait (was inline before).
+fn finish_trae_login(store: &Store, callback_url: &str) -> i32 {
+    let cb = match tc_core::trae_oauth::parse_callback(callback_url) {
+        Ok(c) => c,
+        Err(e) => return err_json(e),
+    };
+    let pending: Option<tc_core::trae_oauth::PendingLogin> =
+        store.read_json_opt("trae_pending_login.json");
+    if let (Some(p), Some(tid)) = (&pending, &cb.login_trace_id) {
+        if *tid != p.state {
+            return err_json("loginTraceID 与会话 state 不匹配（CSRF 防护）".into());
+        }
+    }
+    let identity = load_identity(store);
+    let agent = tc_core::http::agent(30);
+    let exchange = if !cb.refresh_token.is_empty() {
+        tc_core::trae_oauth::exchange_token_refresh(&agent, &identity, &cb.refresh_token)
+    } else {
+        let verifier = pending.map(|p| p.pkce_verifier).unwrap_or_default();
+        tc_core::trae_oauth::exchange_token_auth_code(&agent, &identity, &cb.refresh_token, &verifier)
+    };
+    let result = match exchange {
+        Ok(r) => r,
+        Err(e) => return err_json(e),
+    };
+    let jwt_full = format!("Cloud-IDE-JWT {}", result.access_token);
+    let info = tc_core::jwt::parse(&jwt_full);
+    let Some(uid) = info.user_id else {
+        return err_json("无法从 JWT 解析 user id".into());
+    };
+    if let (Some(cb_uid), false) = (&cb.user_id, cb.refresh_token.is_empty()) {
+        if !cb_uid.is_empty() && cb_uid != &uid {
+            return err_json(format!("换发 token 归属不匹配: 期望={cb_uid}, 实际={uid}"));
+        }
+    }
+    let _ = store.save_json("trae_identity.json", &identity);
+    let mut file = store.accounts();
+    let now = tc_core::util::now_iso_local();
+    if let Some(existing) = file
+        .accounts
+        .iter_mut()
+        .find(|a| a.app == APP_TRAE && a.user_id == uid)
+    {
+        existing.jwt = Some(jwt_full.clone());
+        existing.refresh_token = result.refresh_token.clone().or(existing.refresh_token.clone());
+        existing.updated_at = Some(now);
+    } else {
+        file.accounts.push(Account {
+            app: APP_TRAE.into(),
+            user_id: uid.clone(),
+            name: cb.user_name.clone().unwrap_or_else(|| uid.clone()),
+            enabled: true,
+            jwt: Some(jwt_full),
+            refresh_token: result.refresh_token.clone(),
+            created_at: Some(now),
+            ..Default::default()
+        });
+    }
+    if let Err(e) = store.save_accounts(&file) {
+        return err_json(e);
+    }
+    ok_json(serde_json::json!({
+        "ok": true, "user_id": uid,
+        "name": cb.user_name.unwrap_or_default(),
+        "exp_hours": info.exp_hours,
+    }))
 }
 
 fn cmd_daemon_pid(store: &Store) -> i32 {
