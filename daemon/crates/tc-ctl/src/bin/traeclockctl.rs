@@ -49,6 +49,7 @@ fn main() {
 
     let code = match args.first().map(String::as_str) {
         Some("status") => cmd_status(&store),
+        Some("credits") => cmd_credits(&store),
         Some("accounts") => cmd_accounts(&store, args.get(1).map(String::as_str)),
         Some("add") => cmd_add(&store, &args[1..]),
         Some("remove") => cmd_remove(&store, &args[1..]),
@@ -90,6 +91,11 @@ fn ok_json(v: serde_json::Value) -> i32 {
 fn err_json(msg: String) -> i32 {
     println!("{}", serde_json::json!({ "ok": false, "error": msg }));
     1
+}
+
+fn cmd_credits(store: &Store) -> i32 {
+    let cfg = store.config();
+    ok_json(tc_core::credits::refresh_all(store, &cfg))
 }
 
 fn cmd_status(store: &Store) -> i32 {

@@ -19,6 +19,7 @@ pub mod trae;
 pub mod trae_oauth;
 pub mod workbuddy;
 pub mod qoder;
+pub mod credits;
 
 mod alias;
 pub use alias::trae_checkin;

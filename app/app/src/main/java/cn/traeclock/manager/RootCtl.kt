@@ -48,6 +48,9 @@ object RootCtl {
 
     fun status(): JsonObject? = call("status").json()
 
+    /** Real-time credits query across all enabled accounts (network on device). */
+    fun credits(): JsonObject? = call("credits").json()
+
     fun accounts(app: String? = null): List<JsonObject> {
         val args = mutableListOf("accounts")
         app?.let { args.add(it) }

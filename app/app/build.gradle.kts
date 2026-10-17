@@ -12,8 +12,8 @@ android {
         applicationId = "cn.traeclock.manager"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
-        versionName = "0.1.3"
+        versionCode = 5
+        versionName = "0.2.0"
     }
 
     buildTypes {
@@ -41,10 +41,13 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.2")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
-    implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.compose.foundation:foundation")
+    implementation("androidx.compose.material:material-icons-core")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
     implementation("androidx.core:core-ktx:1.13.1")
+    // Miuix (HyperOS design) — replaces the Material chrome layer (stable 0.9.4)
+    implementation("top.yukonga.miuix.kmp:miuix-ui-android:0.9.4")
+    implementation("top.yukonga.miuix.kmp:miuix-preference-android:0.9.4")
     implementation("com.github.topjohnwu.libsu:core:5.2.2")
     implementation("com.github.topjohnwu.libsu:service:5.2.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")

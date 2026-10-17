@@ -86,3 +86,82 @@ fun formatDuration(secs: Long): String = when {
     secs < 86400 -> "${"%.1f".format(secs / 3600.0)} 小时后"
     else -> "${"%.1f".format(secs / 86400.0)} 天后"
 }
+
+// ── credits dashboard models (from `traeclockctl credits` JSON) ─────────────
+
+/** One account's credit row parsed from the credits JSON. */
+data class CreditItem(
+    val app: String,
+    val userId: String,
+    val name: String,
+    val ok: Boolean,
+    val message: String,
+    val balance: Double?,
+    val general: Double?,
+    val work: Double?,
+    val used: Double?,
+    val earliestExpire: Long?,
+    val packs: List<CreditPack>,
+)
+
+data class CreditPack(
+    val kind: String,
+    val source: String,
+    val remaining: Double?,
+    val total: Double?,
+    val expireTime: Long?,
+    val expireText: String?,
+)
+
+data class CreditsSnapshot(
+    val total: Double,
+    val fetchedAt: String,
+    val rows: List<CreditItem>,
+)
+
+fun parseCredits(o: com.google.gson.JsonObject): CreditsSnapshot {
+    val rows = mutableListOf<CreditItem>()
+    o.getAsJsonArray("rows")?.forEach { el ->
+        val r = el.asJsonObject
+        val packs = r.getAsJsonArray("packs")?.map { p ->
+            val pk = p.asJsonObject
+            CreditPack(
+                kind = pk.get("kind")?.asString ?: "",
+                source = pk.get("source")?.asString ?: "",
+                remaining = pk.get("remaining")?.takeIf { !it.isJsonNull }?.asDouble,
+                total = pk.get("total")?.takeIf { !it.isJsonNull }?.asDouble,
+                expireTime = pk.get("expire_time")?.takeIf { !it.isJsonNull }?.asLong,
+                expireText = pk.get("expire_text")?.takeIf { !it.isJsonNull }?.asString,
+            )
+        } ?: emptyList()
+        rows.add(
+            CreditItem(
+                app = r.get("app")?.asString ?: "",
+                userId = r.get("user_id")?.asString ?: "",
+                name = r.get("name")?.asString ?: "",
+                ok = r.get("ok")?.asBoolean ?: false,
+                message = r.get("message")?.asString ?: "",
+                balance = r.get("balance")?.takeIf { !it.isJsonNull }?.asDouble,
+                general = r.get("general")?.takeIf { !it.isJsonNull }?.asDouble,
+                work = r.get("work")?.takeIf { !it.isJsonNull }?.asDouble,
+                used = r.get("used")?.takeIf { !it.isJsonNull }?.asDouble,
+                earliestExpire = r.get("earliest_expire")?.takeIf { !it.isJsonNull }?.asLong,
+                packs = packs,
+            )
+        )
+    }
+    return CreditsSnapshot(
+        total = o.get("total")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0,
+        fetchedAt = o.get("fetched_at")?.asString ?: "",
+        rows = rows,
+    )
+}
+
+fun fmtExpire(ts: Long?): String = when (ts) {
+    null -> "到期未知"
+    4102444800L -> "长期有效"
+    else -> {
+        val d = java.time.Instant.ofEpochSecond(ts).atZone(java.time.ZoneId.systemDefault())
+        "%04d-%02d-%02d".format(d.year, d.monthValue, d.dayOfMonth)
+    }
+}
