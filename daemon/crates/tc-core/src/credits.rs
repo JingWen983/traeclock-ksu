@@ -214,13 +214,24 @@ pub fn wb_credits(agent: &ureq::Agent, cfg: &AppConfig, acc: &Account) -> Credit
     // returns "3371.00"-style strings), else Σ per-package remaining
     let balance = num_of(dig(&b, &["RemainingCapacity", "remaining", "TotalRemaining", "Balance", "balance"]))
         .or_else(|| sum_cycle_remain(&b));
-    // packages: walk dicts with remaining/total semantics
+    // packages: only dicts that DIRECTLY hold a capacity key (upstream
+    // walk_capable_dicts semantics). Collecting every dict made each parent
+    // envelope row re-report its child package numbers → duplicate pack rows
+    // → Σ packs (and thus the dashboard balance) doubled.
     let mut dicts = Vec::new();
-    walk_dicts(&b, 0, &mut dicts);
+    walk_capable_dicts(&b, 0, &mut dicts);
     let mut packs: Vec<Value> = Vec::new();
     for item in dicts {
-        let total = num_of(dig(item, &["CapacitySize", "CycleCapacitySize", "total", "Total"]));
-        let remaining = num_of(dig(item, &["CycleRemainCapacity", "RemainingCapacity", "remaining"]));
+        let total = num_of(dig(item, &["CycleCapacitySizePrecise", "CycleCapacitySize", "total", "Total", "TotalCapacity", "CapacitySize"]));
+        let remaining = num_of(dig(item, &["CycleRemainCapacity", "CycleCapacityRemain", "CycleCapacityRemainPrecise", "RemainingCapacity", "Remaining", "LeftCapacity", "remaining"])).or_else(|| {
+            // total − used fallback (upstream remaining_of semantics)
+            let used = num_of(dig(item, &["UsedCapacity", "used", "Used"]));
+            let t = num_of(dig(item, &["CycleCapacitySizePrecise", "CycleTotalCapacity", "CycleCapacitySize", "CapacitySize", "total"]));
+            match (used, t) {
+                (Some(u), Some(t)) => Some((t - u).max(0.0)),
+                _ => None,
+            }
+        });
         if remaining.is_none() && total.is_none() {
             continue;
         }
@@ -252,7 +263,7 @@ pub fn wb_credits(agent: &ureq::Agent, cfg: &AppConfig, acc: &Account) -> Credit
 
 fn sum_cycle_remain(body: &Value) -> Option<f64> {
     let mut dicts = Vec::new();
-    walk_dicts(body, 0, &mut dicts);
+    walk_capable_dicts(body, 0, &mut dicts);
     let mut s = 0.0;
     let mut has = false;
     for item in dicts {
@@ -264,20 +275,39 @@ fn sum_cycle_remain(body: &Value) -> Option<f64> {
     has.then_some(s)
 }
 
-fn walk_dicts<'a>(v: &'a Value, depth: usize, out: &mut Vec<&'a Value>) {
+/// dicts that direct-hold a capacity key (upstream CAPACITY_KEYS: excludes
+/// parent envelope dicts, preventing duplicate/phantom pack rows and the
+/// doubled Σ-packs balance).
+fn walk_capable_dicts<'a>(v: &'a Value, depth: usize, out: &mut Vec<&'a Value>) {
+    const CAPACITY_KEYS: [&str; 12] = [
+        "CycleCapacitySizePrecise",
+        "CycleRemainCapacity",
+        "CycleCapacityRemainPrecise",
+        "CycleCapacityRemain",
+        "RemainingCapacity",
+        "Remaining",
+        "CycleTotalCapacity",
+        "CycleCapacitySize",
+        "CapacitySize",
+        "TotalCapacity",
+        "UsedCapacity",
+        "CycleUsedCapacity",
+    ];
     if depth > 8 || out.len() >= 200 {
         return;
     }
     match v {
         Value::Object(m) => {
-            out.push(v);
+            if CAPACITY_KEYS.iter().any(|k| m.contains_key(*k)) {
+                out.push(v);
+            }
             for val in m.values() {
-                walk_dicts(val, depth + 1, out);
+                walk_capable_dicts(val, depth + 1, out);
             }
         }
         Value::Array(a) => {
             for x in a {
-                walk_dicts(x, depth + 1, out);
+                walk_capable_dicts(x, depth + 1, out);
             }
         }
         _ => {}
@@ -328,7 +358,7 @@ pub fn qoder_credits(agent: &ureq::Agent, cfg: &AppConfig, acc: &Account) -> Cre
     };
     let q = b.get("qoderUsage");
     let (plan, plan_used) = quota_pair(q.and_then(|v| v.get("userQuota")));
-    let (addon, addon_used) = quota_pair(q.and_then(|v| v.get("addOnQuota")));
+    let (addon, _addon_used) = quota_pair(q.and_then(|v| v.get("addOnQuota")));
     let plan_expires_at = q
         .and_then(|v| v.get("expiresAt"))
         .and_then(Value::as_i64)
@@ -414,3 +444,52 @@ pub fn refresh_all(store: &Store, cfg: &AppConfig) -> Value {
 // silence unused import when the fingerprint re-export is not referenced on all platforms
 #[allow(unused_imports)]
 use fingerprint as _fp_keep;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Regression (user report: WB 积分翻倍): an envelope dict that merely
+    /// wraps real package dicts must NOT itself become a pack row that
+    /// re-reports the child numbers.
+    #[test]
+    fn wb_pack_walk_excludes_parent_envelope_dicts() {
+        let body = json!({
+            "code": 0,
+            "data": {
+                "Packages": [
+                    {"PackageName": "新人包", "CycleRemainCapacity": "1000.00", "CycleCapacitySize": "1000.00"},
+                    {"PackageName": "签到包", "CycleRemainCapacity": "50.00", "CycleCapacitySize": "50.00"}
+                ]
+            }
+        });
+        let mut dicts = Vec::new();
+        walk_capable_dicts(&body, 0, &mut dicts);
+        // only the two directly-holding dicts; the data envelope is skipped
+        assert_eq!(dicts.len(), 2, "envelope dicts must not join the walk");
+        let sum: f64 = dicts
+            .iter()
+            .filter_map(|d| num_of(dig(d, &["CycleRemainCapacity"])))
+            .sum();
+        assert_eq!(sum, 1050.0);
+    }
+
+    /// total − used fallback (upstream remaining_of).
+    #[test]
+    fn wb_pack_remaining_from_total_minus_used() {
+        let item = json!({"PackageName": "p", "UsedCapacity": 30, "CapacitySize": 120});
+        let total = num_of(dig(&item, &["CapacitySize"]));
+        let remaining = num_of(dig(&item, &["CycleRemainCapacity"])).or_else(|| {
+            match (
+                num_of(dig(&item, &["UsedCapacity"])),
+                num_of(dig(&item, &["CapacitySize"])),
+            ) {
+                (Some(u), Some(t)) => Some((t - u).max(0.0)),
+                _ => None,
+            }
+        });
+        assert_eq!(total, Some(120.0));
+        assert_eq!(remaining, Some(90.0));
+    }
+}
