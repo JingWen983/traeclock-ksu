@@ -1003,7 +1003,7 @@ fun SettingsPage() {
                 SmallTitle(text = "平台指纹")
                 Card(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
                     Column {
-                        BasicRow("指纹模式", if (flavor == "android") "android（手机默认）" else "windows（与桌面一致，逃生通道）")
+                        BasicRow("指纹模式", if (flavor == "windows") "windows（默认，与桌面版一致）" else "android（ mobile 逃生通道）")
                         Row(Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             CharChip("android", flavor == "android") { flavor = "android" }
                             CharChip("windows", flavor == "windows") { flavor = "windows" }
@@ -1036,8 +1036,8 @@ fun SettingsPage() {
                 }
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "说明：android 指纹 = 手机端默认（x-lscbd-platform / cosy 系列换 android 值）；" +
-                        "如遇服务端拒绝可切回 windows 指纹（与桌面版完全一致）。",
+                    "说明：windows 指纹 = 默认（与桌面版请求头完全一致；新登录 JWT 校验设备指纹时最稳）。" +
+                        "android 指纹仅作为实验逃生通道，若服务端拒绝请切回 windows。",
                     style = MiuixTheme.textStyles.footnote1,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 )

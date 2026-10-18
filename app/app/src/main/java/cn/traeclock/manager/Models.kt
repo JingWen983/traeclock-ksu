@@ -69,7 +69,7 @@ fun parseStatus(o: com.google.gson.JsonObject): StatusView {
     val next = o.getAsJsonObject("next")
     return StatusView(
         daemonPid = o.get("daemon_pid")?.takeIf { !it.isJsonNull }?.asLong,
-        platformFlavor = cfg?.get("platform_flavor")?.asString ?: "android",
+        platformFlavor = cfg?.get("platform_flavor")?.asString ?: "windows",
         jitter = cfg?.get("jitter")?.asBoolean ?: true,
         windowStart = cfg?.get("window_start_min")?.asInt ?: 480,
         windowEnd = cfg?.get("window_end_min")?.asInt ?: 600,

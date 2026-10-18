@@ -33,7 +33,9 @@ pub struct AppConfig {
     pub enable_trae: bool,
     pub enable_wb: bool,
     pub enable_qoder: bool,
-    /// "android" (default) or "windows" (verbatim desktop header set).
+    /// "windows" (default — verbatim desktop header set; new JWTs are issued
+    /// with device-fingerprint validation that rejects the android trio) or
+    /// "android" (mobile escape hatch).
     pub platform_flavor: String,
     /// Header overrides: "app:Header-Name" → value. Applied last, wins over defaults.
     pub header_overrides: HashMap<String, String>,
@@ -53,7 +55,7 @@ impl Default for AppConfig {
             enable_trae: true,
             enable_wb: true,
             enable_qoder: true,
-            platform_flavor: "android".into(),
+            platform_flavor: "windows".into(),
             header_overrides: HashMap::new(),
             device_map: HashMap::new(),
         }
@@ -70,7 +72,7 @@ impl AppConfig {
             self.window_end_min = DEFAULT_WINDOW_END_MIN;
         }
         if !matches!(self.platform_flavor.as_str(), "android" | "windows") {
-            self.platform_flavor = "android".into();
+            self.platform_flavor = "windows".into();
         }
         self
     }
@@ -102,7 +104,7 @@ mod tests {
         let cfg: AppConfig = serde_json::from_value(json!({})).unwrap();
         assert_eq!(cfg.window_start_min, DEFAULT_WINDOW_START_MIN);
         assert!(cfg.jitter);
-        assert_eq!(cfg.platform_flavor, "android");
+        assert_eq!(cfg.platform_flavor, "windows");
         let bad: AppConfig = serde_json::from_value(json!({
             "window_start_min": 9999, "window_end_min": 5, "platform_flavor": "ios"
         }))
@@ -110,7 +112,7 @@ mod tests {
         let fixed = bad.sanitized();
         assert_eq!(fixed.window_start_min, DEFAULT_WINDOW_START_MIN);
         assert_eq!(fixed.window_end_min, DEFAULT_WINDOW_END_MIN);
-        assert_eq!(fixed.platform_flavor, "android");
+        assert_eq!(fixed.platform_flavor, "windows");
     }
 
     #[test]

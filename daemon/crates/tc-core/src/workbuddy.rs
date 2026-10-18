@@ -249,8 +249,8 @@ fn deep_reward_dig(v: &Value, depth: usize) -> Option<f64> {
     if depth > 4 {
         return None;
     }
-    const HINTS: [&str; 9] = [
-        "reward", "integral", "score", "bonus", "earn", "gain", "obtain", "add", "claim",
+    const HINTS: [&str; 10] = [
+        "reward", "integral", "score", "bonus", "earn", "gain", "obtain", "add", "claim", "credit",
     ];
     match v {
         Value::Object(m) => {
@@ -331,7 +331,7 @@ fn checkin_do(
             num_or_none(dig(
                 b,
                 &[
-                    "reward", "credits", "points", "amount", "integral", "score", "bonus",
+                    "reward", "credits", "credit", "points", "amount", "integral", "score", "bonus",
                     "reward_amount", "add_integral", "addCredits", "earned",
                 ],
             ))
@@ -647,7 +647,7 @@ mod tests {
         // exact-key list hit wins (add_integral is in the caller's candidate list)
         let body = json!({"data": {"result": {"add_integral": 100, "balance": 5000}}});
         assert_eq!(
-            num_or_none(dig(&body, &["reward", "credits", "integral", "add_integral"])),
+            num_or_none(dig(&body, &["reward", "credits", "credit", "integral", "add_integral"])),
             Some(100.0)
         );
         // no exact key → deep dig hits a reward-hint key (bonus), never balance/total
@@ -655,6 +655,13 @@ mod tests {
         assert_eq!(deep_reward_dig(&body2, 0), Some(50.0));
         // a body with only balance-like keys yields nothing
         assert_eq!(deep_reward_dig(&json!({"balance": 99, "total": 99}), 0), None);
+        // regression (2026-10-18 device log): WB claim returns data.credit (singular)
+        let body3 = json!({"code": 0, "data": {"credit": 20, "is_streak_day": 3, "streak_days": 3}, "msg": "ok"});
+        assert_eq!(
+            num_or_none(dig(&body3, &["reward", "credits", "credit", "integral", "add_integral"])),
+            Some(20.0)
+        );
+        assert_eq!(deep_reward_dig(&body3, 0), Some(20.0));
     }
 
     #[test]

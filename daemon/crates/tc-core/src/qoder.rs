@@ -566,14 +566,14 @@ mod tests {
         assert_eq!(get("Cosy-MachineId").unwrap(), "0123456789abcdef0123456789");
         assert_eq!(get("Cosy-MachineCode").unwrap(), "0123456789abcdef01"); // 18 chars
         assert_eq!(get("Cosy-MachineType").unwrap(), "0123456789abcdef0"); // 17 chars
-        assert_eq!(get("Cosy-MachineOS").unwrap(), CLIENT_MACHINE_OS_ANDROID);
-        // windows flavor restores desktop OS tag
-        let mut cfg_w = AppConfig::default();
-        cfg_w.platform_flavor = "windows".into();
-        let h2 = build_auth_headers(&cfg_w, &creds);
+        assert_eq!(get("Cosy-MachineOS").unwrap(), CLIENT_MACHINE_OS_DESKTOP); // default flavor
+        // android flavor switches the OS tag (mobile escape hatch)
+        let mut cfg_a = AppConfig::default();
+        cfg_a.platform_flavor = "android".into();
+        let h2 = build_auth_headers(&cfg_a, &creds);
         assert_eq!(
             h2.iter().find(|(k, _)| k == "Cosy-MachineOS").unwrap().1,
-            CLIENT_MACHINE_OS_DESKTOP
+            CLIENT_MACHINE_OS_ANDROID
         );
     }
 
