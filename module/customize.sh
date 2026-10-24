@@ -44,4 +44,12 @@ set_perm "$MODPATH/uninstall.sh" 0 0 0755
 mkdir -p /data/adb/traeclock/logs
 chmod 700 /data/adb/traeclock
 
+# install the no-reboot updater into the data dir (persists across upgrades)
+if [ -f "$MODPATH/update.sh" ]; then
+    cp -f "$MODPATH/update.sh" /data/adb/traeclock/update.sh
+    chmod 700 /data/adb/traeclock/update.sh
+    ui_print "- 免重启更新器: /data/adb/traeclock/update.sh"
+    ui_print "  下次起直接: su -c 'sh /data/adb/traeclock/update.sh <zip>'"
+fi
+
 ui_print "- 安装完成。重启后守护进程自启；使用 TraeClock 管理器 App 管理账号。"
