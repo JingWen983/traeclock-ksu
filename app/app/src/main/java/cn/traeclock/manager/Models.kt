@@ -80,6 +80,8 @@ data class StatusView(
 
 data class RoundRow(val time: String, val ok: Int, val already: Int, val failed: Int)
 
+data class CountRow(val total: Int, val enabled: Int, val needsRelogin: Int)
+
 fun parseStatus(o: com.google.gson.JsonObject): StatusView {
     val cfg = o.getAsJsonObject("config")
     val counts = mutableMapOf<String, CountRow>()
