@@ -49,8 +49,8 @@ import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.overlay.OverlayBottomSheet
-import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
+import top.yukonga.miuix.kmp.window.WindowBottomSheet
+import top.yukonga.miuix.kmp.preference.WindowDropdownPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import androidx.compose.ui.graphics.SolidColor
@@ -96,25 +96,17 @@ fun TraeClockApp() {
             drawContent()
         }
         Box(Modifier.fillMaxSize().background(backdropBg)) {
-            // Scaffold (transparent, no chrome) hosts the MiuixPopupHost that
-            // OverlayBottomSheet / OverlayDropdownPreference render into.
-            top.yukonga.miuix.kmp.basic.Scaffold(
-                modifier = Modifier.fillMaxSize(),
-                containerColor = androidx.compose.ui.graphics.Color.Transparent,
-                contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
-            ) { _ ->
-                Box(
-                    Modifier
-                        .fillMaxSize()
-                        .layerBackdrop(backdrop)
-                        .statusBarsPadding()
-                ) {
-                    when (tab) {
-                        0 -> HomePage()
-                        1 -> AccountsPage()
-                        2 -> LogPage()
-                        3 -> SettingsPage()
-                    }
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .layerBackdrop(backdrop)
+                    .statusBarsPadding()
+            ) {
+                when (tab) {
+                    0 -> HomePage()
+                    1 -> AccountsPage()
+                    2 -> LogPage()
+                    3 -> SettingsPage()
                 }
             }
             GlassBottomBar(
@@ -813,12 +805,13 @@ fun AccountsPage() {
                 }
             }
 
-            // add-account FAB, bottom-left above the glass bar
+            // add-account FAB, bottom-right above the glass bar (left corner
+            // overlapped the bar — user report)
             FloatingActionButton(
                 onClick = { showAddSheet = true },
                 modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = 20.dp, bottom = 24.dp),
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 20.dp, bottom = 24.dp),
             ) {
                 Icon(
                     imageVector = MiuixTabIcons.add,
@@ -827,8 +820,9 @@ fun AccountsPage() {
                 )
             }
 
-            // account-type picker sheet
-            OverlayBottomSheet(
+            // account-type picker sheet (window-level: OverlayBottomSheet crashed
+            // with "No NavigationEventDispatcher" outside a miuix Scaffold host)
+            WindowBottomSheet(
                 show = showAddSheet,
                 title = "添加账号",
                 onDismissRequest = { showAddSheet = false },
@@ -1122,7 +1116,7 @@ fun SettingsPage() {
                     Column {
                         val flavorItems = listOf("windows", "android")
                         val flavorIdx = flavorItems.indexOf(flavor).coerceAtLeast(0)
-                        OverlayDropdownPreference(
+                        WindowDropdownPreference(
                             items = flavorItems,
                             selectedIndex = flavorIdx,
                             title = "指纹模式",
