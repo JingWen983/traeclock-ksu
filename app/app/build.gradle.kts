@@ -33,8 +33,13 @@ android {
 }
 
 dependencies {
-    implementation("androidx.activity:activity-compose:1.9.2")
-    implementation("androidx.activity:activity-ktx:1.9.2")
+    // miuix 0.9.4's Window/Overlay popups use androidx.navigationevent's
+    // NavigationBackHandler, whose dispatcher owner is installed by
+    // ComponentActivity >= 1.13 (older 1.9.2 left it unset → sheet open crashed
+    // with "No NavigationEventDispatcher was provided")
+    implementation("androidx.activity:activity-compose:1.13.0")
+    implementation("androidx.activity:activity-ktx:1.13.0")
+    implementation("androidx.navigationevent:navigationevent-compose:1.1.2")
     // pinned (no BOM): backdrop 1.0.6 is compiled against compose-ui 1.10.3 and
     // needs a runtime >= that; the old BOM 2024.09.02 pinned ui 1.7.x which
     // broke its GraphicsLayer-based backdrop sampling
