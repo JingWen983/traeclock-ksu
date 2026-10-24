@@ -84,7 +84,7 @@ fun pagePadding(base: PaddingValues): PaddingValues {
     return PaddingValues(
         start = 12.dp,
         end = 12.dp,
-        top = barTop + 8.dp,
+        top = barTop - 4.dp,
         bottom = bottom,
     )
 }
@@ -158,8 +158,7 @@ fun TraeClockApp() {
                                         progressive = HazeProgressive.Brush(
                                             androidx.compose.ui.graphics.Brush.verticalGradient(
                                                 0f to Color.Black,
-                                                0.55f to Color.Black,
-                                                1f to Color.Black.copy(alpha = 0f),
+                                                1f to Color.Black,
                                             )
                                         )
                                     }
