@@ -724,7 +724,7 @@ fun AccountsPage() {
         }
 
         Box(Modifier.fillMaxSize()) {
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 160.dp)) {
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 220.dp)) {
                 item {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 4.dp)) {
                         CharChip("全部", filter == null) { filter = null }
@@ -806,13 +806,14 @@ fun AccountsPage() {
                 }
             }
 
-            // add-account FAB, bottom-right above the glass bar (left corner
-            // overlapped the bar — user report)
+            // add-account FAB, bottom-right. bottom padding must clear the glass
+            // bar (nav inset + 12dp gap + 64dp bar ≈ 100dp) — 24dp still
+            // overlapped it (user report), 108dp sits above with margin.
             FloatingActionButton(
                 onClick = { showAddSheet = true },
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(end = 20.dp, bottom = 24.dp),
+                    .padding(end = 20.dp, bottom = 108.dp),
             ) {
                 Icon(
                     imageVector = MiuixTabIcons.add,
