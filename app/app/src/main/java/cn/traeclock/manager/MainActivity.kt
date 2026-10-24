@@ -69,6 +69,23 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.viewinterop.AndroidView
 
+/** Scaffold inner paddings passed down so pages can scroll UNDER the blurred top bar. */
+val LocalPageInsets = androidx.compose.runtime.staticCompositionLocalOf { androidx.compose.foundation.layout.PaddingValues(0.dp) }
+/** Merge a page's base content padding with the scaffold insets (top bar +
+ *  bottom bar) so content scrolls UNDER the blurred chrome (HyperNavBar). */
+@Composable
+fun pagePadding(base: PaddingValues): PaddingValues {
+    val insets = LocalPageInsets.current
+    val barTop = insets.calculateTopPadding()
+    val bottom = insets.calculateBottomPadding() + 96.dp
+    return PaddingValues(
+        start = 12.dp,
+        end = 12.dp,
+        top = barTop + 8.dp,
+        bottom = bottom,
+    )
+}
+
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -152,11 +169,15 @@ fun TraeClockApp() {
                     }
                 },
             ) { innerPadding ->
+                // content fills the FULL screen so the blurred top bar has something
+                // behind it (HyperNavBar pattern); pages consume the paddings themselves
+                CompositionLocalProvider(
+                    LocalPageInsets provides innerPadding,
+                ) {
                 Box(
                     Modifier
                         .fillMaxSize()
                         .then(if (hazeState != null) Modifier.hazeSource(hazeState) else Modifier)
-                        .padding(top = innerPadding.calculateTopPadding())
                 ) {
                     when (tab) {
                         0 -> HomePage()
@@ -166,6 +187,7 @@ fun TraeClockApp() {
                     }
                 }
             }
+                }
             LiquidGlassBottomBar(
                 tabs = tabs,
                 icons = icons,
@@ -322,7 +344,7 @@ fun HomePage() {
             }
         }
 
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 96.dp)) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = pagePadding(PaddingValues(0.dp))) {
             item {
                 val s = status
                 if (s != null) {
@@ -1070,7 +1092,7 @@ fun LogPage() {
                     onClick = { scope.launch { withContext(Dispatchers.IO) { lines = RootCtl.log(300) } } },
                 )
             }
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 96.dp)) {
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = pagePadding(PaddingValues(0.dp))) {
                 items(lines.reversed()) { raw ->
                     // render "[ts] line": extract the ts field from the NDJSON event
                     // color pinned to theme onSurface (default Text uses onPrimary,
@@ -1112,7 +1134,7 @@ fun SettingsPage() {
             withContext(Dispatchers.IO) { status = RootCtl.status()?.let { parseStatus(it) } }
         }
 
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 96.dp)) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = pagePadding(PaddingValues(0.dp))) {
             item {
                 SmallTitle(text = "签到调度")
                 Card(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
