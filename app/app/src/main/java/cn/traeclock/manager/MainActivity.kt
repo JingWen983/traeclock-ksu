@@ -28,6 +28,7 @@ import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
 import top.yukonga.miuix.kmp.basic.TopAppBar
+import top.yukonga.miuix.kmp.icon.MiuixIcons
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -60,6 +61,7 @@ import top.yukonga.miuix.kmp.preference.WindowDropdownPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.viewinterop.AndroidView
 
 class MainActivity : ComponentActivity() {
@@ -91,14 +93,16 @@ fun TraeClockApp() {
         var tab by remember { mutableIntStateOf(0) }
         val tabs = listOf("主页", "账号", "日志", "设置")
         val icons = listOf(
-            top.yukonga.miuix.kmp.icon.extended.MiuixIcons.Home,
-            top.yukonga.miuix.kmp.icon.extended.MiuixIcons.Contacts,
-            top.yukonga.miuix.kmp.icon.extended.MiuixIcons.Notes,
-            top.yukonga.miuix.kmp.icon.extended.MiuixIcons.Settings,
+            MiuixIcons.Home,
+            MiuixIcons.Contacts,
+            MiuixIcons.Notes,
+            MiuixIcons.Settings,
         )
 
-        // Haze progressive top-bar blur (HyperNavBar TopBarBlurConfig values)
-        val hazeState = rememberHazeState()
+        // Haze progressive top-bar blur (HyperNavBar TopBarBlurConfig values).
+        // miuix-blur requires API 33 RuntimeShader; below that fall back to a
+        // plain surface bar (null = blur disabled, same as HyperNavBar).
+        val hazeState = if (android.os.Build.VERSION.SDK_INT >= 33) rememberHazeState() else null
         val surfaceColor = MiuixTheme.colorScheme.surface
         val barColor = if (hazeState != null) androidx.compose.ui.graphics.Color.Transparent else surfaceColor
 
@@ -196,7 +200,7 @@ private fun LiquidGlassBottomBar(
                 shape = { CircleShape },
                 effects = {
                     vibrancy()
-                    blur(4.dp.toPx(), 4.dp.toPx())
+                    blur(4.dp.toPx())
                     lens(refractionHeight = 24.dp.toPx(), refractionAmount = 24.dp.toPx())
                 },
                 onDrawSurface = { drawRect(containerColor) },
@@ -814,7 +818,7 @@ fun AccountsPage() {
                     .padding(end = 20.dp, bottom = 108.dp),
             ) {
                 Icon(
-                    imageVector = top.yukonga.miuix.kmp.icon.extended.MiuixIcons.Add,
+                    imageVector = MiuixIcons.Add,
                     contentDescription = "添加账号",
                     tint = MiuixTheme.colorScheme.onPrimary,
                 )
