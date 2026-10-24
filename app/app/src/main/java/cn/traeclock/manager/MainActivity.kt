@@ -37,6 +37,7 @@ import top.yukonga.miuix.kmp.icon.extended.Add
 import top.yukonga.miuix.kmp.icon.extended.Contacts
 import top.yukonga.miuix.kmp.icon.extended.Home
 import top.yukonga.miuix.kmp.icon.extended.Notes
+import top.yukonga.miuix.kmp.icon.extended.Refresh
 import top.yukonga.miuix.kmp.icon.extended.Settings
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.*
@@ -85,7 +86,7 @@ fun pagePadding(base: PaddingValues): PaddingValues {
     return PaddingValues(
         start = 12.dp,
         end = 12.dp,
-        top = barTop - 4.dp,
+        top = barTop + 8.dp,
         bottom = bottom,
     )
 }
