@@ -8,6 +8,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -827,32 +828,38 @@ fun AccountsPage() {
                 title = "添加账号",
                 onDismissRequest = { showAddSheet = false },
             ) {
-                Column(Modifier.padding(bottom = 16.dp)) {
+                Column(Modifier.padding(horizontal = 8.dp).padding(bottom = 12.dp)) {
                     SwitchPreference(
                         title = "清除原有 Cookie",
-                        summary = "登录前清空 WebView 已保存的 Cookie（避免旧登录态串号，推荐多账号时开启）",
+                        summary = "登录前清空 WebView 已保存的 Cookie（多账号推荐开启）",
                         checked = clearCookies,
                         onCheckedChange = { clearCookies = it },
                     )
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(4.dp))
+                    // compact platform rows: name only, whole row tappable,
+                    // light background hints the row is selectable
+                    val rowBg = MiuixTheme.colorScheme.surfaceContainer
                     listOf(
-                        Triple(Apps.TRAE, "Trae · OAuth 授权", "在 App 内完成登录，自动接收凭证"),
-                        Triple(Apps.WB, "WorkBuddy · 扫码登录", "内嵌打开登录页，完成后点「我已登录」"),
-                        Triple(Apps.QODER, "Qoder · 设备流授权", "内嵌打开授权页，后台自动轮询（最长 240 秒）"),
-                    ).forEach { (app, title, summary) ->
-                        Card(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
-                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(title, style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Bold)
-                                Text(summary, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-                                TextButton(
-                                    text = "开始登录",
-                                    onClick = {
-                                        showAddSheet = false
-                                        startFlow(app)
-                                    },
-                                    modifier = Modifier.fillMaxWidth(),
-                                )
-                            }
+                        Apps.TRAE to "Trae",
+                        Apps.WB to "WorkBuddy",
+                        Apps.QODER to "Qoder",
+                    ).forEach { (app, label) ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 4.dp)
+                                .clip(CircleShape)
+                                .background(rowBg)
+                                .clickable {
+                                    showAddSheet = false
+                                    startFlow(app)
+                                }
+                                .padding(horizontal = 20.dp, vertical = 16.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(label, style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Bold)
+                            Text("添加 ›", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
                         }
                     }
                 }
@@ -1085,8 +1092,10 @@ fun SettingsPage() {
         var saved by remember { mutableStateOf("") }
         var jitter by remember(status) { mutableStateOf(status?.jitter ?: true) }
         var flavor by remember(status) { mutableStateOf(status?.platformFlavor ?: "windows") }
-        var windowStart by remember(status) { mutableStateOf(((status?.windowStart ?: 480) / 60).toString() + ":" + "%02d".format((status?.windowStart ?: 480) % 60)) }
-        var windowEnd by remember(status) { mutableStateOf(((status?.windowEnd ?: 600) / 60).toString() + ":" + "%02d".format((status?.windowEnd ?: 600) % 60)) }
+        var startH by remember(status) { mutableIntStateOf((status?.windowStart ?: 480) / 60) }
+        var startM by remember(status) { mutableIntStateOf((status?.windowStart ?: 480) % 60) }
+        var endH by remember(status) { mutableIntStateOf((status?.windowEnd ?: 600) / 60) }
+        var endM by remember(status) { mutableIntStateOf((status?.windowEnd ?: 600) % 60) }
         var gap by remember(status) { mutableStateOf((status?.accountGap ?: 3).toString()) }
 
         LaunchedEffect(Unit) {
@@ -1098,9 +1107,17 @@ fun SettingsPage() {
                 SmallTitle(text = "签到调度")
                 Card(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
                     Column {
-                        BasicRow("签到窗口", "格式 HH:mm，例如 8:00 与 10:00")
-                        TextField(value = windowStart, onValueChange = { windowStart = it }, label = "开始 (HH:mm)", modifier = Modifier.padding(horizontal = 16.dp))
-                        TextField(value = windowEnd, onValueChange = { windowEnd = it }, label = "结束 (HH:mm)", modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp))
+                        BasicRow("签到窗口", "滚动选择每日签到的起止时间")
+                        TimePickerRow(
+                            label = "开始",
+                            hour = startH, minute = startM,
+                            onChange = { h, m -> startH = h; startM = m },
+                        )
+                        TimePickerRow(
+                            label = "结束",
+                            hour = endH, minute = endM,
+                            onChange = { h, m -> endH = h; endM = m },
+                        )
                         SwitchPreference(
                             title = "随机抖动",
                             summary = "在窗口内按天确定性选点，三应用选点互不相同（防风控）",
@@ -1128,14 +1145,10 @@ fun SettingsPage() {
                 TextButton(
                     text = "保存设置",
                     onClick = {
-                        fun parseHM(s: String, fallback: Int): Int {
-                            val parts = s.split(":")
-                            val h = parts.getOrNull(0)?.trim()?.toIntOrNull() ?: return fallback
-                            val m = parts.getOrNull(1)?.trim()?.toIntOrNull() ?: 0
-                            return (h * 60 + m).coerceIn(0, 24 * 60)
-                        }
-                        val startMin = parseHM(windowStart, 480)
-                        val endMin = parseHM(windowEnd, 600)
+                        val startMin = (startH * 60 + startM).coerceIn(0, 24 * 60)
+                        val endMinRaw = endH * 60 + endM
+                        // end must be > start; nudge to start+30min when violated
+                        val endMin = if (endMinRaw > startMin) endMinRaw.coerceAtMost(24 * 60) else (startMin + 30).coerceAtMost(24 * 60)
                         val patch = """{"window_start_min":$startMin,"window_end_min":$endMin,""" +
                             """"account_gap_secs":${gap.toIntOrNull() ?: 3},"jitter":$jitter,"platform_flavor":"$flavor"}"""
                         scope.launch {
@@ -1166,5 +1179,41 @@ private fun BasicRow(title: String, summary: String) {
     Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
         Text(title, style = MiuixTheme.textStyles.body1)
         Text(summary, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+    }
+}
+
+/** One HH:mm picker row: label on the left, hour/minute NumberPickers on the right. */
+@Composable
+private fun TimePickerRow(
+    label: String,
+    hour: Int,
+    minute: Int,
+    onChange: (Int, Int) -> Unit,
+) {
+    Column(Modifier.fillMaxWidth()) {
+        Text(label, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, modifier = Modifier.padding(horizontal = 16.dp))
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            top.yukonga.miuix.kmp.basic.NumberPicker(
+                value = hour,
+                onValueChange = { onChange(it, minute) },
+                range = 0..23,
+                label = { it.toString().padStart(2, '0') },
+                wrapAround = true,
+                modifier = Modifier.weight(1f),
+            )
+            Text(":", style = MiuixTheme.textStyles.title2)
+            top.yukonga.miuix.kmp.basic.NumberPicker(
+                value = minute,
+                onValueChange = { onChange(hour, it) },
+                range = 0..59,
+                label = { it.toString().padStart(2, '0') },
+                wrapAround = true,
+                modifier = Modifier.weight(1f),
+            )
+        }
     }
 }
