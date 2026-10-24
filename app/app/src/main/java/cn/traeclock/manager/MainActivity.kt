@@ -30,6 +30,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
 import cn.traeclock.manager.ui.liquid.LiquidGlassNavigationBar
 import cn.traeclock.manager.ui.liquid.LiquidGlassNavigationBarItem
+import top.yukonga.miuix.kmp.blur.layerBackdrop
 import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Add
@@ -180,6 +181,7 @@ fun TraeClockApp() {
                     Modifier
                         .fillMaxSize()
                         .then(if (hazeState != null) Modifier.hazeSource(hazeState) else Modifier)
+                        .layerBackdrop(backdrop)
                 ) {
                     when (tab) {
                         0 -> HomePage()
@@ -1067,7 +1069,7 @@ fun LogPage() {
         LaunchedEffect(Unit) {
             withContext(Dispatchers.IO) { lines = RootCtl.log(300) }
         }
-        Column(Modifier.fillMaxSize().padding(start = 12.dp, end = 12.dp, top = 12.dp)) {
+        Column(Modifier.fillMaxSize().padding(start = 12.dp, end = 12.dp).padding(top = LocalPageInsets.current.calculateTopPadding() + 4.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("事件日志", style = MiuixTheme.textStyles.title3)
                 TextButton(
@@ -1075,7 +1077,7 @@ fun LogPage() {
                     onClick = { scope.launch { withContext(Dispatchers.IO) { lines = RootCtl.log(300) } } },
                 )
             }
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = pagePadding(PaddingValues(0.dp))) {
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = LocalPageInsets.current.calculateBottomPadding() + 96.dp)) {
                 items(lines.reversed()) { raw ->
                     // render "[ts] line": extract the ts field from the NDJSON event
                     // color pinned to theme onSurface (default Text uses onPrimary,
