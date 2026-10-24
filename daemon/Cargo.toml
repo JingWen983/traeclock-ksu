@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/tc-core", "crates/tc-ctl"]
 
 [workspace.package]
-version = "0.5.15"
+version = "0.5.16"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
