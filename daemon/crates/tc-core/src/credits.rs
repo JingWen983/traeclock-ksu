@@ -113,10 +113,14 @@ pub fn trae_credits(agent: &ureq::Agent, cfg: &AppConfig, acc: &Account) -> Cred
     let mut work = 0.0f64;
     let mut earliest: Option<i64> = None;
     for pack in &packs {
-        let Some(limit) = dig(pack, &["entitlement_base_info", "quota", "credits_limit"]).and_then(|v| v.as_f64()) else {
+        // NOTE: nested field reads must be `path` (literal walk). `dig` is
+        // candidate-key semantics — the first key hits the CONTAINER object
+        // ("entitlement_base_info") and as_f64 fails → every pack skipped →
+        // balance 0.0 (2026-10-24 live response verified).
+        let Some(limit) = crate::envelope::path(pack, &["entitlement_base_info", "quota", "credits_limit"]).and_then(|v| v.as_f64()) else {
             continue;
         };
-        let used = pack.get("usage").and_then(|u| u.get("credits_amount")).and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let used = crate::envelope::path(pack, &["usage", "credits_amount"]).and_then(|v| v.as_f64()).unwrap_or(0.0);
         let remaining = (limit - used).max(0.0);
         if remaining <= 0.0 {
             continue;
@@ -125,7 +129,7 @@ pub fn trae_credits(agent: &ureq::Agent, cfg: &AppConfig, acc: &Account) -> Cred
         if expire <= now_ts {
             continue;
         }
-        let product_id = dig(pack, &["entitlement_base_info", "product_id"]).and_then(|v| v.as_i64()).unwrap_or(0);
+        let product_id = crate::envelope::path(pack, &["entitlement_base_info", "product_id"]).and_then(|v| v.as_i64()).unwrap_or(0);
         let kind = if product_id == 209 { "Work" } else { "通用" };
         total += remaining;
         match kind {
@@ -249,53 +253,79 @@ pub fn wb_credits(agent: &ureq::Agent, cfg: &AppConfig, acc: &Account) -> Credit
         row.message = "响应非 JSON".into();
         return row;
     };
-    // balance: top-level keys first (num_of tolerates numeric strings — WB
-    // returns "3371.00"-style strings), else Σ per-package remaining.
-    // NOTE "Remaining" must be in the candidates: 2026-10 live responses put
-    // the account total at data.Remaining — missing it made balance fall to
-    // Σ packs while the container row ALSO joined the packs (doubling).
-    let balance = num_of(dig(&b, &["RemainingCapacity", "Remaining", "remaining", "TotalRemaining", "Balance", "balance"]))
+    // Authoritative balance first: the 2026-10-24 live response carries
+    // data.TotalCredits ("4339.63") AND BOTH projections of the same credits
+    // (CreditGroups[] AND Packages[]) — summing any combination double-counts.
+    // Prefer the server total; fall back to top-level keys, then Σ Packages[]
+    // (leaf dicts only, CreditGroups excluded by kind-name match).
+    let balance = num_of(dig(&b, &["TotalCredits"]))
+        .or_else(|| num_of(dig(&b, &["RemainingCapacity", "Remaining", "remaining", "TotalRemaining", "Balance", "balance"])))
         .or_else(|| sum_cycle_remain(&b));
-    // packages: only dicts that DIRECTLY hold a capacity key AND have no
-    // capable descendants (leaf packs). A container dict (e.g. the `data`
-    // envelope holding a top-level total Remaining + Packages[]) directly
-    // holds a capacity key too — including it as a pack row re-reports the
-    // WHOLE account total as one more "pack" → Σ packs doubled the balance.
-    let mut dicts = Vec::new();
-    walk_capable_dicts(&b, 0, &mut dicts);
-    let leaf_dicts: Vec<&Value> = dicts
-        .iter()
-        .copied()
-        .filter(|d| !dicts.iter().any(|other| *other != *d && contains_subtree(d, other)))
-        .collect();
+    // packages: prefer data.Packages[] when present (2026-10-24 live shape:
+    // data.Packages[] + data.CreditGroups[] are two projections of the SAME
+    // credits — walking both doubles the list). Leaf-dict walk stays as the
+    // fallback for older response shapes without data.Packages.
     let mut packs: Vec<Value> = Vec::new();
-    for item in leaf_dicts {
-        let total = num_of(dig(item, &["CycleCapacitySizePrecise", "CycleCapacitySize", "total", "Total", "TotalCapacity", "CapacitySize"]));
-        let remaining = num_of(dig(item, &["CycleRemainCapacity", "CycleCapacityRemain", "CycleCapacityRemainPrecise", "RemainingCapacity", "Remaining", "LeftCapacity", "remaining"])).or_else(|| {
-            // total − used fallback (upstream remaining_of semantics)
-            let used = num_of(dig(item, &["UsedCapacity", "used", "Used"]));
-            let t = num_of(dig(item, &["CycleCapacitySizePrecise", "CycleTotalCapacity", "CycleCapacitySize", "CapacitySize", "total"]));
-            match (used, t) {
-                (Some(u), Some(t)) => Some((t - u).max(0.0)),
-                _ => None,
-            }
-        });
-        if remaining.is_none() && total.is_none() {
-            continue;
+    let packages_arr = crate::envelope::path(&b, &["data", "Packages"]).and_then(|v| v.as_array()).cloned();
+    if let Some(arr) = packages_arr {
+        for item in &arr {
+            let total = num_of(dig(item, &["CycleCapacitySizePrecise", "CycleCapacitySize", "TotalCapacity", "CapacitySize", "CycleTotalCapacity"]));
+            let remaining = num_of(dig(item, &["CycleRemainCapacity", "CycleCapacityRemain", "RemainingCapacity", "Remaining", "LeftCapacity"])).or_else(|| {
+                let used = num_of(dig(item, &["CycleUsedCapacity", "UsedCapacity", "used"]));
+                let t = num_of(dig(item, &["CycleCapacitySizePrecise", "CycleTotalCapacity", "CycleCapacitySize", "CapacitySize"]));
+                match (used, t) {
+                    (Some(u), Some(t)) => Some((t - u).max(0.0)),
+                    _ => None,
+                }
+            });
+            let pname = dig(item, &["PackageName", "packageCode", "PackageCode", "name"])
+                .and_then(|v| match v { Value::String(s) => Some(s.clone()), _ => None })
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "积分包".into());
+            packs.push(json!({
+                "kind": "通用",
+                "source": pname,
+                "remaining": remaining.unwrap_or(0.0),
+                "total": total.unwrap_or(0.0),
+                "expire_time": NEVER_EXPIRE_TS,
+            }));
         }
-        let pname = dig(item, &["PackageName", "packageName", "Name", "name", "description"])
-            .and_then(|v| match v { Value::String(s) => Some(s.clone()), _ => None })
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "积分包".into());
-        let expire_raw = dig(item, &["DeductionEndTime", "deductionEndTime", "PackageEndTime", "EndTime", "endTime", "expireTime", "expireAt"]);
-        let expire_ts = to_ts(expire_raw).unwrap_or(NEVER_EXPIRE_TS);
-        packs.push(json!({
-            "kind": "通用",
-            "source": pname,
-            "remaining": remaining.unwrap_or(0.0),
-            "total": total.unwrap_or(0.0),
-            "expire_time": expire_ts,
-        }));
+    } else {
+        let mut dicts = Vec::new();
+        walk_capable_dicts(&b, 0, &mut dicts);
+        let leaf_dicts: Vec<&Value> = dicts
+            .iter()
+            .copied()
+            .filter(|d| !dicts.iter().any(|other| *other != *d && contains_subtree(d, other)))
+            .collect();
+        for item in leaf_dicts {
+            let total = num_of(dig(item, &["CycleCapacitySizePrecise", "CycleCapacitySize", "total", "Total", "TotalCapacity", "CapacitySize"]));
+            let remaining = num_of(dig(item, &["CycleRemainCapacity", "CycleCapacityRemain", "CycleCapacityRemainPrecise", "RemainingCapacity", "Remaining", "LeftCapacity", "remaining"])).or_else(|| {
+                // total − used fallback (upstream remaining_of semantics)
+                let used = num_of(dig(item, &["UsedCapacity", "used", "Used"]));
+                let t = num_of(dig(item, &["CycleCapacitySizePrecise", "CycleTotalCapacity", "CycleCapacitySize", "CapacitySize", "total"]));
+                match (used, t) {
+                    (Some(u), Some(t)) => Some((t - u).max(0.0)),
+                    _ => None,
+                }
+            });
+            if remaining.is_none() && total.is_none() {
+                continue;
+            }
+            let pname = dig(item, &["PackageName", "packageName", "Name", "name", "description"])
+                .and_then(|v| match v { Value::String(s) => Some(s.clone()), _ => None })
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "积分包".into());
+            let expire_raw = dig(item, &["DeductionEndTime", "deductionEndTime", "PackageEndTime", "EndTime", "endTime", "expireTime", "expireAt"]);
+            let expire_ts = to_ts(expire_raw).unwrap_or(NEVER_EXPIRE_TS);
+            packs.push(json!({
+                "kind": "通用",
+                "source": pname,
+                "remaining": remaining.unwrap_or(0.0),
+                "total": total.unwrap_or(0.0),
+                "expire_time": expire_ts,
+            }));
+        }
     }
     row.ok = balance.is_some() || !packs.is_empty();
     row.message = if row.ok { String::new() } else { "响应结构未识别".into() };
@@ -614,5 +644,70 @@ mod tests {
         });
         assert_eq!(total, Some(120.0));
         assert_eq!(remaining, Some(90.0));
+    }
+
+    /// Regression v3 (2026-10-24 live response, user report "WB积分依旧翻倍"):
+    /// the summary carries data.TotalCredits AND BOTH projections of the same
+    /// credits (CreditGroups[] AND Packages[]). data.TotalCredits is the
+    /// authoritative balance; packs must come from data.Packages[] ONLY —
+    /// never the union of both projections (Σ was exactly 2×TotalCredits).
+    #[test]
+    fn wb_totalcredits_wins_and_packs_use_packages_array() {
+        let body = json!({
+            "code": 0,
+            "data": {
+                "CreditGroups": [
+                    {"Name": "套餐基础积分", "CycleRemainCapacity": "262.63000001", "CycleTotalCapacity": "500"},
+                    {"Name": "平台奖励积分", "CycleRemainCapacity": "4077", "CycleTotalCapacity": "4177"}
+                ],
+                "Packages": [
+                    {"PackageCode": "TCACA_007", "CycleRemainCapacity": "4077", "CycleTotalCapacity": "4177"},
+                    {"PackageCode": "TCACA_008", "CycleRemainCapacity": "262.63000001", "CycleTotalCapacity": "500"}
+                ],
+                "TotalCredits": "4339.63000001"
+            }
+        });
+        // authoritative total
+        assert_eq!(num_of(dig(&body, &["TotalCredits"])), Some(4339.63000001));
+        // packs come from data.Packages[] only → 2 rows, NOT 4
+        let arr = crate::envelope::path(&body, &["data", "Packages"]).and_then(|v| v.as_array()).cloned();
+        assert_eq!(arr.as_ref().map(|a| a.len()), Some(2));
+        let pack_sum: f64 = arr.unwrap().iter()
+            .filter_map(|p| num_of(dig(p, &["CycleRemainCapacity"])))
+            .sum();
+        assert_eq!(pack_sum, 4339.63000001);
+        // the doubling shape: Σ(CreditGroups) + Σ(Packages) = 2×TotalCredits
+        let both: f64 = crate::envelope::path(&body, &["data", "CreditGroups"]).unwrap().as_array().unwrap().iter()
+            .chain(crate::envelope::path(&body, &["data", "Packages"]).unwrap().as_array().unwrap())
+            .filter_map(|p| num_of(dig(p, &["CycleRemainCapacity"])))
+            .sum();
+        assert_eq!(both, 2.0 * 4339.63000001);
+    }
+
+    /// Regression (2026-10-24 live response, user report "Trae积分显示为0"):
+    /// pack quota lives at entitlement_base_info.quota.credits_limit — `dig`
+    /// is candidate-key semantics and the first key hits the
+    /// entitlement_base_info CONTAINER, so nested reads must use `path`.
+    #[test]
+    fn trae_pack_quota_needs_path_semantics() {
+        let pack = json!({
+            "display_desc": "签到奖励",
+            "entitlement_base_info": {
+                "product_id": 208,
+                "quota": {"credits_limit": 100}
+            },
+            "expire_time": 1795481521,
+            "usage": {"credits_amount": 0}
+        });
+        // dig FAILS (returns the entitlement_base_info container, not a number)
+        assert!(dig(pack.as_object().unwrap().into_iter().next().unwrap().1, &["credits_limit"]).is_none()
+            || dig(&pack, &["entitlement_base_info", "quota", "credits_limit"]).map(|v| v.is_object()).unwrap_or(false));
+        // path succeeds
+        let limit = crate::envelope::path(&pack, &["entitlement_base_info", "quota", "credits_limit"]).and_then(|v| v.as_f64());
+        assert_eq!(limit, Some(100.0));
+        let used = crate::envelope::path(&pack, &["usage", "credits_amount"]).and_then(|v| v.as_f64()).unwrap_or(0.0);
+        assert_eq!((limit.unwrap() - used).max(0.0), 100.0);
+        let product_id = crate::envelope::path(&pack, &["entitlement_base_info", "product_id"]).and_then(|v| v.as_i64());
+        assert_eq!(product_id, Some(208));
     }
 }
