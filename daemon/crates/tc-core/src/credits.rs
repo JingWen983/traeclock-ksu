@@ -211,17 +211,26 @@ pub fn wb_credits(agent: &ureq::Agent, cfg: &AppConfig, acc: &Account) -> Credit
         return row;
     };
     // balance: top-level keys first (num_of tolerates numeric strings — WB
-    // returns "3371.00"-style strings), else Σ per-package remaining
-    let balance = num_of(dig(&b, &["RemainingCapacity", "remaining", "TotalRemaining", "Balance", "balance"]))
+    // returns "3371.00"-style strings), else Σ per-package remaining.
+    // NOTE "Remaining" must be in the candidates: 2026-10 live responses put
+    // the account total at data.Remaining — missing it made balance fall to
+    // Σ packs while the container row ALSO joined the packs (doubling).
+    let balance = num_of(dig(&b, &["RemainingCapacity", "Remaining", "remaining", "TotalRemaining", "Balance", "balance"]))
         .or_else(|| sum_cycle_remain(&b));
-    // packages: only dicts that DIRECTLY hold a capacity key (upstream
-    // walk_capable_dicts semantics). Collecting every dict made each parent
-    // envelope row re-report its child package numbers → duplicate pack rows
-    // → Σ packs (and thus the dashboard balance) doubled.
+    // packages: only dicts that DIRECTLY hold a capacity key AND have no
+    // capable descendants (leaf packs). A container dict (e.g. the `data`
+    // envelope holding a top-level total Remaining + Packages[]) directly
+    // holds a capacity key too — including it as a pack row re-reports the
+    // WHOLE account total as one more "pack" → Σ packs doubled the balance.
     let mut dicts = Vec::new();
     walk_capable_dicts(&b, 0, &mut dicts);
+    let leaf_dicts: Vec<&Value> = dicts
+        .iter()
+        .copied()
+        .filter(|d| !dicts.iter().any(|other| *other != *d && contains_subtree(d, other)))
+        .collect();
     let mut packs: Vec<Value> = Vec::new();
-    for item in dicts {
+    for item in leaf_dicts {
         let total = num_of(dig(item, &["CycleCapacitySizePrecise", "CycleCapacitySize", "total", "Total", "TotalCapacity", "CapacitySize"]));
         let remaining = num_of(dig(item, &["CycleRemainCapacity", "CycleCapacityRemain", "CycleCapacityRemainPrecise", "RemainingCapacity", "Remaining", "LeftCapacity", "remaining"])).or_else(|| {
             // total − used fallback (upstream remaining_of semantics)
@@ -251,11 +260,12 @@ pub fn wb_credits(agent: &ureq::Agent, cfg: &AppConfig, acc: &Account) -> Credit
     }
     row.ok = balance.is_some() || !packs.is_empty();
     row.message = if row.ok { String::new() } else { "响应结构未识别".into() };
-    // Dashboard consistency: when per-package rows parsed, balance = Σ packs
-    // (the top-level `remaining` key can match non-credit rate-limit fields
-    // and return a bogus 0 while real packs exist — screenshot-verified bug).
+    // Upstream semantics restored: a top-level total wins when present;
+    // Σ leaf packs is the fallback for the new-style Packages[] response
+    // (where the top-level `remaining` candidate key may be a non-credit
+    // rate-limit field — trust packs only when no top-level total parsed).
     let pack_sum: f64 = packs.iter().filter_map(|p| p.get("remaining").and_then(|v| v.as_f64())).sum();
-    row.balance = if packs.is_empty() { balance } else { Some(pack_sum.max(balance.unwrap_or(0.0))) }.map(r2);
+    row.balance = Some(balance.unwrap_or(pack_sum)).map(r2);
     row.earliest_expire = packs.iter().filter_map(|p| p.get("expire_time").and_then(|v| v.as_i64())).min();
     row.packs = packs;
     row
@@ -264,9 +274,16 @@ pub fn wb_credits(agent: &ureq::Agent, cfg: &AppConfig, acc: &Account) -> Credit
 fn sum_cycle_remain(body: &Value) -> Option<f64> {
     let mut dicts = Vec::new();
     walk_capable_dicts(body, 0, &mut dicts);
+    // leaf-only: container dicts would add the account total on top of the
+    // per-pack values (the doubling bug)
+    let leaf_dicts: Vec<&Value> = dicts
+        .iter()
+        .copied()
+        .filter(|d| !dicts.iter().any(|other| *other != *d && contains_subtree(d, other)))
+        .collect();
     let mut s = 0.0;
     let mut has = false;
-    for item in dicts {
+    for item in leaf_dicts {
         if let Some(v) = num_of(dig(item, &["CycleRemainCapacity", "RemainingCapacity", "remaining"])) {
             s += v;
             has = true;
@@ -311,6 +328,16 @@ fn walk_capable_dicts<'a>(v: &'a Value, depth: usize, out: &mut Vec<&'a Value>) 
             }
         }
         _ => {}
+    }
+}
+
+/// Is `other` a strict descendant of `ancestor`? Used to drop container rows:
+/// a dict that wraps another capable dict is an envelope/aggregate, not a pack.
+fn contains_subtree<'a>(ancestor: &'a Value, other: &'a Value) -> bool {
+    match ancestor {
+        Value::Object(m) => m.values().any(|v| std::ptr::eq(v, other) || contains_subtree(v, other)),
+        Value::Array(a) => a.iter().any(|v| std::ptr::eq(v, other) || contains_subtree(v, other)),
+        _ => false,
     }
 }
 
@@ -473,6 +500,47 @@ mod tests {
             .filter_map(|d| num_of(dig(d, &["CycleRemainCapacity"])))
             .sum();
         assert_eq!(sum, 1050.0);
+    }
+
+    /// Regression v2 (still doubling on 0.4.1/0.4.2): when the summary has a
+    /// top-level total AND nested Packages[], the `data` container directly
+    /// holds a capacity key too. It must be dropped as a pack row (leaf-only
+    /// walk) and the top-level total must win as the balance — never
+    /// max(Σ packs, total), which double-counts.
+    #[test]
+    fn wb_balance_not_doubled_with_top_total_and_packs() {
+        let body = json!({
+            "code": 0,
+            "data": {
+                "Remaining": "3371.00",
+                "Packages": [
+                    {"PackageName": "包A", "CycleRemainCapacity": "1000.00", "CycleCapacitySize": "1000.00"},
+                    {"PackageName": "包B", "CycleRemainCapacity": "2371.00", "CycleCapacitySize": "2371.00"}
+                ]
+            }
+        });
+        // top-level total wins ("Remaining" is in the candidate keys)
+        let balance = num_of(dig(&body, &["RemainingCapacity", "Remaining", "remaining", "TotalRemaining", "Balance", "balance"]));
+        assert_eq!(balance, Some(3371.0));
+        // leaf-only pack walk: the data container (holding Remaining) is NOT a pack
+        let mut dicts = Vec::new();
+        walk_capable_dicts(&body, 0, &mut dicts);
+        assert_eq!(dicts.len(), 3, "data + 2 packs are capable");
+        let leaf: Vec<&Value> = dicts
+            .iter()
+            .copied()
+            .filter(|d| !dicts.iter().any(|o| *o != *d && contains_subtree(d, *o)))
+            .collect();
+        assert_eq!(leaf.len(), 2, "container row dropped");
+        let pack_sum: f64 = leaf
+            .iter()
+            .filter_map(|d| num_of(dig(d, &["CycleRemainCapacity"])))
+            .sum();
+        assert_eq!(pack_sum, 3371.0);
+        // the balance formula: top-level total wins → 3371, NOT 6742
+        let final_balance = balance.unwrap_or(pack_sum);
+        assert_eq!(final_balance, 3371.0);
+        assert_ne!(final_balance, pack_sum * 2.0);
     }
 
     /// total − used fallback (upstream remaining_of).
