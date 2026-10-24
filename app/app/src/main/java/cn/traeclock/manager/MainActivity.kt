@@ -730,7 +730,7 @@ fun AccountsPage() {
         }
 
         Box(Modifier.fillMaxSize()) {
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 220.dp)) {
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = pagePadding(PaddingValues(0.dp))) {
                 item {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 4.dp)) {
                         CharChip("全部", filter == null) { filter = null }
@@ -750,7 +750,14 @@ fun AccountsPage() {
                     Card(modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
                         Column(Modifier.padding(start = 16.dp, bottom = 12.dp, top = 16.dp, end = 16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                Text(a.name.ifEmpty { a.userId }, style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                                Text(
+                                    a.name.ifEmpty { a.userId },
+                                    style = MiuixTheme.textStyles.body1,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
                                 // enable/disable switch at the card's top-right corner
                                 Switch(
                                     checked = a.enabled,

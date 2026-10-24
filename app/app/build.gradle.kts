@@ -43,7 +43,7 @@ dependencies {
     // pinned (no BOM): backdrop 1.0.6 is compiled against compose-ui 1.10.3 and
     // needs a runtime >= that; the old BOM 2024.09.02 pinned ui 1.7.x which
     // broke its GraphicsLayer-based backdrop sampling
-    val composeVersion = "1.10.3"
+    val composeVersion = "1.12.1"
     implementation("androidx.compose.ui:ui:$composeVersion")
     implementation("androidx.compose.ui:ui-tooling-preview:$composeVersion")
     implementation("androidx.compose.foundation:foundation:$composeVersion")
