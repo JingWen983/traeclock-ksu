@@ -1098,6 +1098,8 @@ fun SettingsPage() {
         var endH by remember(status) { mutableIntStateOf((status?.windowEnd ?: 600) / 60) }
         var endM by remember(status) { mutableIntStateOf((status?.windowEnd ?: 600) % 60) }
         var gap by remember(status) { mutableStateOf((status?.accountGap ?: 3).toString()) }
+        var showStartPicker by remember { mutableStateOf(false) }
+        var showEndPicker by remember { mutableStateOf(false) }
 
         LaunchedEffect(Unit) {
             withContext(Dispatchers.IO) { status = RootCtl.status()?.let { parseStatus(it) } }
@@ -1108,16 +1110,16 @@ fun SettingsPage() {
                 SmallTitle(text = "签到调度")
                 Card(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
                     Column {
-                        BasicRow("签到窗口", "滚动选择每日签到的起止时间")
-                        TimePickerRow(
+                        // compact display rows; tapping opens a WindowDialog with pickers
+                        TimeDisplayRow(
                             label = "开始",
                             hour = startH, minute = startM,
-                            onChange = { h, m -> startH = h; startM = m },
+                            onClick = { showStartPicker = true },
                         )
-                        TimePickerRow(
+                        TimeDisplayRow(
                             label = "结束",
                             hour = endH, minute = endM,
-                            onChange = { h, m -> endH = h; endM = m },
+                            onClick = { showEndPicker = true },
                         )
                         SwitchPreference(
                             title = "随机抖动",
@@ -1172,6 +1174,22 @@ fun SettingsPage() {
                 )
             }
         }
+
+        // time picker dialogs (rollers live here, not inline on the page)
+        TimePickerDialog(
+            show = showStartPicker,
+            title = "签到开始时间",
+            hour = startH, minute = startM,
+            onConfirm = { h, m -> startH = h; startM = m; showStartPicker = false },
+            onDismiss = { showStartPicker = false },
+        )
+        TimePickerDialog(
+            show = showEndPicker,
+            title = "签到结束时间",
+            hour = endH, minute = endM,
+            onConfirm = { h, m -> endH = h; endM = m; showEndPicker = false },
+            onDismiss = { showEndPicker = false },
+        )
     }
 }
 
@@ -1183,37 +1201,78 @@ private fun BasicRow(title: String, summary: String) {
     }
 }
 
-/** One HH:mm picker row: label on the left, hour/minute NumberPickers on the right. */
+/** Compact time display row: label + HH:mm value, whole row opens the picker dialog. */
 @Composable
-private fun TimePickerRow(
+private fun TimeDisplayRow(
     label: String,
     hour: Int,
     minute: Int,
-    onChange: (Int, Int) -> Unit,
+    onClick: () -> Unit,
 ) {
-    Column(Modifier.fillMaxWidth()) {
-        Text(label, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, modifier = Modifier.padding(horizontal = 16.dp))
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            top.yukonga.miuix.kmp.basic.NumberPicker(
-                value = hour,
-                onValueChange = { onChange(it, minute) },
-                range = 0..23,
-                label = { it.toString().padStart(2, '0') },
-                wrapAround = true,
-                modifier = Modifier.weight(1f),
-            )
-            Text(":", style = MiuixTheme.textStyles.title2)
-            top.yukonga.miuix.kmp.basic.NumberPicker(
-                value = minute,
-                onValueChange = { onChange(hour, it) },
-                range = 0..59,
-                label = { it.toString().padStart(2, '0') },
-                wrapAround = true,
-                modifier = Modifier.weight(1f),
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = MiuixTheme.textStyles.body1)
+        Text(
+            "%02d:%02d".format(hour, minute),
+            style = MiuixTheme.textStyles.body1,
+            fontWeight = FontWeight.Bold,
+            color = MiuixTheme.colorScheme.primary,
+        )
+    }
+}
+
+/** WindowDialog with hour/minute NumberPickers and a confirm button. */
+@Composable
+private fun TimePickerDialog(
+    show: Boolean,
+    title: String,
+    hour: Int,
+    minute: Int,
+    onConfirm: (Int, Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var h by remember(show) { mutableIntStateOf(hour) }
+    var m by remember(show) { mutableIntStateOf(minute) }
+    top.yukonga.miuix.kmp.window.WindowDialog(
+        show = show,
+        title = title,
+        onDismissRequest = onDismiss,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                top.yukonga.miuix.kmp.basic.NumberPicker(
+                    value = h,
+                    onValueChange = { h = it },
+                    range = 0..23,
+                    label = { it.toString().padStart(2, '0') },
+                    wrapAround = true,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(":", style = MiuixTheme.textStyles.title2)
+                top.yukonga.miuix.kmp.basic.NumberPicker(
+                    value = m,
+                    onValueChange = { m = it },
+                    range = 0..59,
+                    label = { it.toString().padStart(2, '0') },
+                    wrapAround = true,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            TextButton(
+                text = "确定",
+                onClick = { onConfirm(h, m) },
+                modifier = Modifier.fillMaxWidth(),
             )
         }
     }
