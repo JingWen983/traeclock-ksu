@@ -70,7 +70,6 @@ import androidx.compose.ui.util.fastCoerceIn
 import androidx.compose.ui.util.lerp
 import cn.traeclock.manager.ui.liquid.DampedDragAnimation
 import cn.traeclock.manager.ui.liquid.InteractiveHighlight
-import top.yukonga.miuix.kmp.theme.MiuixTheme
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.blur.Backdrop
 import top.yukonga.miuix.kmp.blur.blur

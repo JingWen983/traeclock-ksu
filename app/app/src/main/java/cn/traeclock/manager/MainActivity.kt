@@ -222,7 +222,7 @@ private fun LiquidGlassBottomBar(
         LiquidGlassNavigationBar(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .pointerInput(Unit) { androidx.compose.foundation.gestures.detectTapGestures { } }
+                .pointerInput(Unit) { detectTapGestures { } }
                 .padding(start = 28.dp, end = 28.dp, bottom = bottomPadding),
             selectedIndex = selected,
             onSelected = onSelect,
