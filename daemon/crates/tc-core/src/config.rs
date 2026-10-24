@@ -40,6 +40,11 @@ pub struct AppConfig {
     pub header_overrides: HashMap<String, String>,
     /// Trae device fingerprints: uid → entry (drift guard; wins over re-derivation).
     pub device_map: HashMap<String, crate::fingerprint::DeviceEntry>,
+    /// Module identity device_id (from trae_identity.json). Trae JWTs bind to
+    /// the OAuth login device_id — this is the fallback for accounts without
+    /// a device_map entry. Written by the ctl at login/refresh.
+    #[serde(default)]
+    pub module_device_id: String,
     /// Schema marker for one-time migrations. IMPORTANT: serde default here
     /// is 0 (absent field = pre-0.4.3 config), NOT the struct Default's
     /// CURRENT_SCHEMA — `#[serde(default)]` on the struct routes missing
@@ -68,6 +73,7 @@ impl Default for AppConfig {
             platform_flavor: "windows".into(),
             header_overrides: HashMap::new(),
             device_map: HashMap::new(),
+            module_device_id: String::new(),
             schema: CURRENT_SCHEMA,
         }
     }

@@ -28,14 +28,23 @@ pub const EXPIRY_WARN_HOURS: f64 = 24.0;
 /// Network-error retry gap (matches source RETRY_GAP).
 pub const RETRY_GAP_SECS: u64 = 1;
 
-/// Device triple for uid: device_map entry wins (drift guard), else derive.
+/// Device triple for uid: device_map entry wins (drift guard), else the
+/// module identity device_id (config.module_device_id) — Trae JWTs are issued
+/// against the OAuth login URL's device_id = module identity; a per-uid
+/// derived id has never been seen by the server and /pay/ endpoints reject
+/// it with 401. Legacy accounts logged in before the device_map writeback
+/// (or whose device_map entry predates the identity binding) land here.
 pub fn device_for(cfg: &AppConfig, uid: &str) -> DeviceEntry {
     if let Some(e) = cfg.device_map.get(uid) {
         if !e.device_id.is_empty() {
             return e.clone();
         }
     }
-    crate::fingerprint::derive_device(uid)
+    let mut e = crate::fingerprint::derive_device(uid);
+    if !cfg.module_device_id.is_empty() {
+        e.device_id = cfg.module_device_id.clone();
+    }
+    e
 }
 
 /// Check-in / status shared headers (per-account device id + session).

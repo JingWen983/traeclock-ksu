@@ -178,6 +178,45 @@ fn classify_source(pack: &Value) -> String {
 
 // ── WorkBuddy ────────────────────────────────────────────────────────────────
 
+/// RAW billing-summary response for one WB account (debug-credits command):
+/// captures exactly what the server returns so parse bugs (e.g. doubled
+/// balance) can be diagnosed from the real payload. Tokens never included —
+/// only the response body.
+pub fn wb_summary_raw(agent: &ureq::Agent, cfg: &AppConfig, acc: &Account) -> (i32, Option<Value>) {
+    let Some(token) = acc.access_token.as_ref().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else {
+        return (0, None);
+    };
+    let domain = acc.domain.clone().unwrap_or_default();
+    let base = crate::workbuddy::region_billing_base(&domain);
+    let creds = crate::workbuddy::Creds {
+        access_token: token,
+        uid: acc.user_id.clone(),
+        domain,
+        ..Default::default()
+    };
+    let headers = crate::workbuddy::build_auth_headers(cfg, &creds, true);
+    let url = format!("{base}/billing/meter/get-user-resource-summary");
+    let (status, body, _raw) = http::post_json(agent, &url, &headers, &json!({}));
+    (status, body)
+}
+
+/// RAW Trae ide_user_ent_usage response for one account (debug-credits).
+pub fn trae_usage_raw(agent: &ureq::Agent, cfg: &AppConfig, acc: &Account) -> (i32, Option<Value>) {
+    let Some(jwt) = acc.jwt.as_ref().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else {
+        return (0, None);
+    };
+    let Some(uid) = jwt::parse(&jwt).user_id else {
+        return (0, None);
+    };
+    let dev = trae::device_for(cfg, &uid);
+    let url = "https://api.trae.cn/trae/api/v2/pay/ide_user_ent_usage";
+    let headers = trae::build_headers(cfg, &jwt, &dev);
+    let (status, body, _raw) = http::post_json(agent, url, &headers, &json!({
+        "require_usage": true, "req_source": 2
+    }));
+    (status, body)
+}
+
 /// WB balance + packages via billing meter summary (port of balance_from_summary
 /// + packages_from chains, web_platform headers as the source uses).
 pub fn wb_credits(agent: &ureq::Agent, cfg: &AppConfig, acc: &Account) -> CreditRow {

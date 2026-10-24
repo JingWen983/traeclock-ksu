@@ -51,6 +51,7 @@ fn main() {
         Some("status") => cmd_status(&store),
         Some("credits") => cmd_credits(&store),
         Some("credit-diffs") => cmd_credit_diffs(&store),
+        Some("debug-credits") => cmd_debug_credits(&store),
         Some("accounts") => cmd_accounts(&store, args.get(1).map(String::as_str)),
         Some("add") => cmd_add(&store, &args[1..]),
         Some("remove") => cmd_remove(&store, &args[1..]),
@@ -80,7 +81,7 @@ fn main() {
 fn print_usage() {
     eprintln!(
         "usage: traeclockctl <status|accounts|add|remove|enable|disable|run-now|config|log|checkin-log|\
-trae-login-url|trae-callback|trae-refresh|wb-start|wb-poll|qoder-start|qoder-wait|credits|credit-diffs|daemon-pid> [args]"
+trae-login-url|trae-callback|trae-refresh|wb-start|wb-poll|qoder-start|qoder-wait|credits|credit-diffs|debug-credits|daemon-pid> [args]"
     );
 }
 
@@ -105,6 +106,35 @@ fn cmd_credit_diffs(store: &Store) -> i32 {
     let mut diffs = state.credit_diffs;
     diffs.sort_by(|a, b| (b.date.clone() + " " + &b.time).cmp(&(a.date.clone() + " " + &a.time)));
     ok_json(serde_json::json!({ "ok": true, "diffs": diffs }))
+}
+
+/// RAW credit endpoint responses per account (diagnostics for parse bugs such
+/// as the doubled WB balance). Response bodies only — tokens never included.
+fn cmd_debug_credits(store: &Store) -> i32 {
+    let cfg = store.config();
+    let agent = tc_core::http::agent(30);
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    for a in store.accounts().accounts.iter().filter(|a| a.enabled) {
+        let entry = match a.app.as_str() {
+            APP_WB => {
+                let (status, body) = tc_core::credits::wb_summary_raw(&agent, &cfg, a);
+                serde_json::json!({
+                    "app": "wb", "user_id": a.user_id,
+                    "http_status": status, "response": body,
+                })
+            }
+            APP_TRAE => {
+                let (status, body) = tc_core::credits::trae_usage_raw(&agent, &cfg, a);
+                serde_json::json!({
+                    "app": "trae", "user_id": a.user_id,
+                    "http_status": status, "response": body,
+                })
+            }
+            _ => continue,
+        };
+        out.push(entry);
+    }
+    ok_json(serde_json::json!({ "ok": true, "debug": out }))
 }
 
 fn cmd_status(store: &Store) -> i32 {
@@ -405,7 +435,7 @@ fn cmd_checkin_log(store: &Store) -> i32 {
 const TRAE_LOOPBACK_PORT: u16 = tc_core::trae_oauth::LOOPBACK_PORT;
 
 fn cmd_trae_login_url(store: &Store) -> i32 {
-    let identity = load_identity(store);
+    let identity = load_identity_sync_cfg(store);
     // KEY FIX: persist the identity NOW — the authorization page registers
     // this device; if load_identity regenerated a different key on the
     // exchange call, the server rejects with 20403 Device not match.
@@ -436,7 +466,7 @@ fn cmd_trae_refresh(store: &Store, uid: Option<&str>) -> i32 {
     let Some(rt) = acc.refresh_token.as_ref().filter(|s| !s.is_empty()) else {
         return err_json("该账号无 refresh_token".into());
     };
-    let identity = load_identity(store);
+    let identity = load_identity_sync_cfg(store);
     let agent = tc_core::http::agent(30);
     match tc_core::trae_oauth::exchange_token_refresh(&agent, &identity, rt) {
         Ok(r) => {
@@ -447,6 +477,17 @@ fn cmd_trae_refresh(store: &Store, uid: Option<&str>) -> i32 {
                     return err_json(format!("刷新后 user_id 不匹配: 期望={uid}, 实际={new_uid}"));
                 }
             }
+            // refreshed JWT re-binds to the module identity device — write the
+            // device_map entry too (same as fresh logins, issue #76 semantics)
+            let mut cfg = store.config();
+            let dev_entry = cfg
+                .device_map
+                .entry(uid.to_string())
+                .or_insert_with(|| tc_core::fingerprint::derive_device(uid));
+            let mut dev_entry = dev_entry.clone();
+            dev_entry.device_id = identity.device_id.clone();
+            cfg.device_map.insert(uid.to_string(), dev_entry);
+            let _ = store.save_config(&cfg);
             let mut file = file.clone();
             for a in file.accounts.iter_mut() {
                 if a.app == APP_TRAE && a.user_id == uid {
@@ -483,6 +524,19 @@ fn load_identity(store: &Store) -> tc_core::trae_oauth::ModuleIdentity {
         saved.as_ref().map(|s| s.private_key_pem.as_str()),
     )
     .unwrap_or_default()
+}
+
+/// Load identity AND persist its device_id into config.module_device_id so
+/// `device_for` can fall back to the JWT-bound device for accounts without
+/// a device_map entry (e.g. logged in before the writeback existed).
+fn load_identity_sync_cfg(store: &Store) -> tc_core::trae_oauth::ModuleIdentity {
+    let identity = load_identity(store);
+    let mut cfg = store.config();
+    if cfg.module_device_id != identity.device_id {
+        cfg.module_device_id = identity.device_id.clone();
+        let _ = store.save_config(&cfg);
+    }
+    identity
 }
 
 // ── WorkBuddy OAuth (state → browser → poll) ────────────────────────────────
@@ -832,7 +886,7 @@ fn finish_trae_login(store: &Store, callback_url: &str) -> i32 {
             _ => {}
         }
     }
-    let identity = load_identity(store);
+    let identity = load_identity_sync_cfg(store);
     let agent = tc_core::http::agent(30);
     let exchange = if let Some(code) = cb.auth_code.clone().or_else(|| {
         // 标准 code 参数也走 AuthCode 交换
