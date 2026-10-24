@@ -54,6 +54,10 @@ dependencies {
     // Miuix (HyperOS design) — replaces the Material chrome layer (stable 0.9.4)
     implementation("top.yukonga.miuix.kmp:miuix-ui-android:0.9.4")
     implementation("top.yukonga.miuix.kmp:miuix-preference-android:0.9.4")
+    // HyperNavBar-style chrome: extended icons + blur + Haze progressive top bar
+    implementation("top.yukonga.miuix.kmp:miuix-icons-android:0.9.4")
+    implementation("top.yukonga.miuix.kmp:miuix-blur-android:0.9.4")
+    implementation("dev.chrisbanes.haze:haze:1.7.3")
     implementation("com.github.topjohnwu.libsu:core:5.2.2")
     implementation("com.github.topjohnwu.libsu:service:5.2.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")

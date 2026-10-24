@@ -7,7 +7,6 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -23,6 +22,12 @@ import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
+import dev.chrisbanes.haze.HazeProgressive
+import dev.chrisbanes.haze.HazeTint
+import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.hazeSource
+import dev.chrisbanes.haze.rememberHazeState
+import top.yukonga.miuix.kmp.basic.TopAppBar
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -54,9 +59,7 @@ import top.yukonga.miuix.kmp.window.WindowBottomSheet
 import top.yukonga.miuix.kmp.preference.WindowDropdownPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.viewinterop.AndroidView
 
 class MainActivity : ComponentActivity() {
@@ -87,73 +90,125 @@ fun TraeClockApp() {
     top.yukonga.miuix.kmp.theme.MiuixTheme(controller = controller) {
         var tab by remember { mutableIntStateOf(0) }
         val tabs = listOf("主页", "账号", "日志", "设置")
-        // liquid-glass bottom bar: the page content is captured into a backdrop
-        // layer and refracted through the bar (Kyant0/AndroidLiquidGlass)
-        // (theme colors are @Composable reads — hoist them OUT of the DrawScope
-        // lambdas, which are plain non-composable DrawScope.() -> Unit)
-        val backdropBg = MiuixTheme.colorScheme.background
+        val icons = listOf(
+            top.yukonga.miuix.kmp.icon.extended.MiuixIcons.Home,
+            top.yukonga.miuix.kmp.icon.extended.MiuixIcons.Contacts,
+            top.yukonga.miuix.kmp.icon.extended.MiuixIcons.Notes,
+            top.yukonga.miuix.kmp.icon.extended.MiuixIcons.Settings,
+        )
+
+        // Haze progressive top-bar blur (HyperNavBar TopBarBlurConfig values)
+        val hazeState = rememberHazeState()
+        val surfaceColor = MiuixTheme.colorScheme.surface
+        val barColor = if (hazeState != null) androidx.compose.ui.graphics.Color.Transparent else surfaceColor
+
+        // liquid-glass bottom bar backdrop: content is captured into a layer
+        // and refracted through the pill (miuix-blur)
         val backdrop = rememberLayerBackdrop {
-            drawRect(backdropBg)
+            drawRect(surfaceColor)
             drawContent()
         }
-        Box(Modifier.fillMaxSize().background(backdropBg)) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .layerBackdrop(backdrop)
-                    .statusBarsPadding()
-            ) {
-                when (tab) {
-                    0 -> HomePage()
-                    1 -> AccountsPage()
-                    2 -> LogPage()
-                    3 -> SettingsPage()
+
+        Box(Modifier.fillMaxSize().background(MiuixTheme.colorScheme.background)) {
+            // page host: Haze blur source + top bar with progressive blur
+            top.yukonga.miuix.kmp.basic.Scaffold(
+                modifier = Modifier.fillMaxSize(),
+                containerColor = androidx.compose.ui.graphics.Color.Transparent,
+                contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
+                topBar = {
+                    Box {
+                        if (hazeState != null) {
+                            Box(
+                                Modifier
+                                    .matchParentSize()
+                                    .hazeEffect(state = hazeState) {
+                                        blurRadius = 15.dp
+                                        backgroundColor = surfaceColor
+                                        noiseFactor = 0f
+                                        tints = listOf(HazeTint(surfaceColor.copy(alpha = 0.3f)))
+                                        progressive = HazeProgressive.Brush(
+                                            androidx.compose.ui.graphics.Brush.verticalGradient(
+                                                0f to Color.Black,
+                                                0.55f to Color.Black,
+                                                1f to Color.Black.copy(alpha = 0f),
+                                            )
+                                        )
+                                    }
+                            )
+                        }
+                        TopAppBar(
+                            title = tabs[tab],
+                            color = barColor,
+                        )
+                    }
+                },
+            ) { innerPadding ->
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .then(if (hazeState != null) Modifier.hazeSource(hazeState) else Modifier)
+                        .padding(top = innerPadding.calculateTopPadding())
+                ) {
+                    when (tab) {
+                        0 -> HomePage()
+                        1 -> AccountsPage()
+                        2 -> LogPage()
+                        3 -> SettingsPage()
+                    }
                 }
             }
-            GlassBottomBar(
+            LiquidGlassBottomBar(
                 tabs = tabs,
+                icons = icons,
                 selected = tab,
                 onSelect = { tab = it },
                 backdrop = backdrop,
-                Modifier.align(Alignment.BottomCenter),
+                modifier = Modifier.align(Alignment.BottomCenter),
             )
         }
     }
 }
 
-/** Floating liquid-glass pill bottom bar (SukiSU-style): pages scroll under it,
- *  the backdrop refracts whatever is behind the bar. */
+/** HyperNavBar-style liquid glass bottom bar: pill backdrop with vibrancy +
+ *  blur + lens refraction, selected pill indicator, miuix extended icons. */
 @Composable
-private fun GlassBottomBar(
+private fun LiquidGlassBottomBar(
     tabs: List<String>,
+    icons: List<androidx.compose.ui.graphics.vector.ImageVector>,
     selected: Int,
     onSelect: (Int) -> Unit,
     backdrop: com.kyant.backdrop.Backdrop,
     modifier: Modifier = Modifier,
 ) {
-    // hoisted @Composable theme reads (DrawScope lambdas are non-composable)
-    val surfaceTint = MiuixTheme.colorScheme.surface.copy(alpha = 0.5f)
+    val containerColor = MiuixTheme.colorScheme.surfaceContainer.copy(0.4f)
+    var tabWidthPx by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+    var totalWidthPx by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+    val density = androidx.compose.ui.platform.LocalDensity.current
+
     Box(
         modifier
-            .padding(horizontal = 24f.dp)
             .navigationBarsPadding()
-            .padding(bottom = 12f.dp)
+            .padding(horizontal = 24.dp, vertical = 10.dp)
             .fillMaxWidth()
-            .height(64f.dp)
+            .height(64.dp)
             .drawBackdrop(
                 backdrop = backdrop,
                 shape = { CircleShape },
                 effects = {
                     vibrancy()
-                    blur(4f.dp.toPx())
-                    lens(16f.dp.toPx(), 32f.dp.toPx())
+                    blur(4.dp.toPx(), 4.dp.toPx())
+                    lens(refractionHeight = 24.dp.toPx(), refractionAmount = 24.dp.toPx())
                 },
-                onDrawSurface = { drawRect(surfaceTint) },
+                onDrawSurface = { drawRect(containerColor) },
             ),
-        contentAlignment = Alignment.Center,
     ) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+            Modifier
+                .fillMaxSize()
+                .onGloballyPositioned { coords ->
+                    totalWidthPx = coords.size.width.toFloat()
+                    tabWidthPx = totalWidthPx / tabs.size
+                },
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -161,15 +216,14 @@ private fun GlassBottomBar(
                 val sel = index == selected
                 Column(
                     Modifier
-                        .clickable(
-                            interactionSource = null,
-                            indication = null,
-                        ) { onSelect(index) }
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                        .weight(1f)
+                        .fillMaxSize()
+                        .clickable(interactionSource = null, indication = null) { onSelect(index) },
                     horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
                 ) {
                     Icon(
-                        imageVector = MiuixTabIcons.forIndex(index),
+                        imageVector = icons[index],
                         contentDescription = label,
                         tint = if (sel) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     )
@@ -182,77 +236,6 @@ private fun GlassBottomBar(
             }
         }
     }
-}
-
-/** Tab icons: tiny self-drawn vectors (no icons artifact dependency). */
-private object MiuixTabIcons {
-    private fun glyph(name: String, block: androidx.compose.ui.graphics.vector.PathBuilder.() -> Unit): androidx.compose.ui.graphics.vector.ImageVector =
-        androidx.compose.ui.graphics.vector.ImageVector.Builder(
-            name = name,
-            defaultWidth = 26.dp,
-            defaultHeight = 26.dp,
-            viewportWidth = 24f,
-            viewportHeight = 24f,
-        ).apply { path(fill = SolidColor(Color.Black)) { block() } }.build()
-
-    private val home by lazy {
-        glyph("TabHome") {
-            moveTo(12f, 3f); lineTo(2f, 12f); lineTo(5f, 12f); lineTo(5f, 20f); lineTo(11f, 20f)
-            lineTo(11f, 14f); lineTo(13f, 14f); lineTo(13f, 20f); lineTo(19f, 20f); lineTo(19f, 12f)
-            lineTo(22f, 12f); close()
-        }
-    }
-    private val people by lazy {
-        glyph("TabPeople") {
-            moveTo(4f, 6f); lineTo(20f, 6f); lineTo(20f, 8f); lineTo(4f, 8f); close()
-            moveTo(4f, 11f); lineTo(20f, 11f); lineTo(20f, 13f); lineTo(4f, 13f); close()
-            moveTo(4f, 16f); lineTo(14f, 16f); lineTo(14f, 18f); lineTo(4f, 18f); close()
-        }
-    }
-    private val person by lazy {
-        glyph("TabPerson") {
-            moveTo(11f, 5f); lineTo(13f, 5f); lineTo(13f, 11f); lineTo(19f, 11f); lineTo(19f, 13f)
-            lineTo(13f, 13f); lineTo(13f, 19f); lineTo(11f, 19f); lineTo(11f, 13f); lineTo(5f, 13f)
-            lineTo(5f, 11f); lineTo(11f, 11f); close()
-        }
-    }
-    private val plus by lazy {
-        glyph("TabAdd") {
-            moveTo(11f, 4f); lineTo(13f, 4f); lineTo(13f, 11f); lineTo(20f, 11f); lineTo(20f, 13f)
-            lineTo(13f, 13f); lineTo(13f, 20f); lineTo(11f, 20f); lineTo(11f, 13f); lineTo(4f, 13f)
-            lineTo(4f, 11f); lineTo(11f, 11f); close()
-        }
-    }
-    private val doc by lazy {
-        glyph("TabDoc") {
-            moveTo(6f, 2f); lineTo(15f, 2f); lineTo(20f, 7f); lineTo(20f, 22f); lineTo(6f, 22f); close()
-            moveTo(14f, 3.5f); lineTo(14f, 8f); lineTo(18.5f, 8f); close()
-        }
-    }
-    private val settings by lazy {
-        glyph("TabSettings") {
-            moveTo(12f, 8f)
-            curveTo(14.2f, 8f, 16f, 9.8f, 16f, 12f)
-            curveTo(16f, 14.2f, 14.2f, 16f, 12f, 16f)
-            curveTo(9.8f, 16f, 8f, 14.2f, 8f, 12f)
-            curveTo(8f, 9.8f, 9.8f, 8f, 12f, 8f)
-            close()
-            moveTo(10.5f, 2f); lineTo(13.5f, 2f); lineTo(14f, 5f); lineTo(16.5f, 6f); lineTo(19f, 4.5f)
-            lineTo(21f, 6.5f); lineTo(19.5f, 9f); lineTo(20.5f, 11.5f); lineTo(23.5f, 12f); lineTo(23.5f, 12f)
-            lineTo(20.5f, 12.5f); lineTo(19.5f, 15f); lineTo(21f, 17.5f); lineTo(19f, 19.5f); lineTo(16.5f, 18f)
-            lineTo(14f, 19f); lineTo(13.5f, 22f); lineTo(10.5f, 22f); lineTo(10f, 19f); lineTo(7.5f, 18f)
-            lineTo(5f, 19.5f); lineTo(3f, 17.5f); lineTo(4.5f, 15f); lineTo(3.5f, 12.5f); lineTo(0.5f, 12f)
-            lineTo(3.5f, 11.5f); lineTo(4.5f, 9f); lineTo(3f, 6.5f); lineTo(5f, 4.5f); lineTo(7.5f, 6f)
-            lineTo(10f, 5f); close()
-        }
-    }
-
-    val forIndex: (Int) -> androidx.compose.ui.graphics.vector.ImageVector = { index ->
-        when (index) {
-            0 -> home; 1 -> people; 2 -> doc; else -> settings
-        }
-    }
-    val add: androidx.compose.ui.graphics.vector.ImageVector get() = plus
 }
 
 // ── shared page scaffold (status gate) ───────────────────────────────────────
@@ -831,7 +814,7 @@ fun AccountsPage() {
                     .padding(end = 20.dp, bottom = 108.dp),
             ) {
                 Icon(
-                    imageVector = MiuixTabIcons.add,
+                    imageVector = top.yukonga.miuix.kmp.icon.extended.MiuixIcons.Add,
                     contentDescription = "添加账号",
                     tint = MiuixTheme.colorScheme.onPrimary,
                 )
