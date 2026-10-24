@@ -334,60 +334,85 @@ fun HomePage() {
             item {
                 val s = status
                 if (s != null) {
-                    SmallTitle(text = "守护进程")
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("状态", style = MiuixTheme.textStyles.body1)
+                    // ── two-card dashboard row: daemon state | accounts ──
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // left card: daemon running + today's progress + next check-in
+                        Card(modifier = Modifier.weight(1f)) {
+                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text(
+                                        if (s.daemonPid != null) "工作中" else "未运行",
+                                        style = MiuixTheme.textStyles.body1,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (s.daemonPid != null) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                    )
+                                }
+                                s.daemonPid?.let { pid ->
+                                    Text(
+                                        "(pid: $pid)",
+                                        style = MiuixTheme.textStyles.footnote2,
+                                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                    )
+                                }
+                                Spacer(Modifier.height(2.dp))
+                                // 今日已签/未签: per-app last rounds (ok+already = signed today)
+                                val signedApps = Apps.ALL.count { app ->
+                                    val r = s.lastRounds[app]
+                                    r != null && r.time.startsWith(todayStr()) && (r.ok > 0 || r.already > 0)
+                                }
+                                val enabledApps = Apps.ALL.count { (s.counts[it]?.enabled ?: 0) > 0 }
                                 Text(
-                                    if (s.daemonPid != null) "运行中 (pid ${s.daemonPid})" else "未运行（重启设备后自启）",
+                                    "今日已签 $signedApps / 未签 ${maxOf(0, enabledApps - signedApps)}",
                                     style = MiuixTheme.textStyles.body2,
-                                    color = if (s.daemonPid != null) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
                                 )
-                            }
-                            s.nextApp?.let { app ->
-                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Text("下次签到", style = MiuixTheme.textStyles.body1)
-                                    Text("${Apps.displayName(app)} · ${s.nextInSecs?.let { formatDuration(it) } ?: "—"}", style = MiuixTheme.textStyles.body2)
+                                val nextTxt = when {
+                                    s.nextInSecs == null || s.nextInSecs <= 0L -> "—"
+                                    s.nextInSecs >= 86400L -> "${"%.0f".format(s.nextInSecs / 86400.0)} 天"
+                                    s.nextInSecs >= 3600L -> "${"%.1f".format(s.nextInSecs / 3600.0)} 小时"
+                                    else -> "${s.nextInSecs / 60} 分钟"
+                                }
+                                Column {
+                                    Text("距离下次签到", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                                    Text(nextTxt, style = MiuixTheme.textStyles.title2, fontWeight = FontWeight.Bold)
+                                    s.nextApp?.let { app ->
+                                        Text(Apps.displayName(app), style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                                    }
                                 }
                             }
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("签到窗口", style = MiuixTheme.textStyles.body1)
-                                Text(
-                                    "%02d:%02d – %02d:%02d%s".format(
-                                        s.windowStart / 60, s.windowStart % 60, s.windowEnd / 60, s.windowEnd % 60,
-                                        if (s.jitter) "（随机抖动）" else "",
-                                    ),
-                                    style = MiuixTheme.textStyles.body2,
-                                )
-                            }
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("账号间隔 / 指纹", style = MiuixTheme.textStyles.body1)
-                                Text("${s.accountGap}s · ${s.platformFlavor}", style = MiuixTheme.textStyles.body2)
-                            }
                         }
-                    }
-                    SmallTitle(text = "账号分组")
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        Column {
-                            Apps.ALL.forEach { app ->
-                                val c = s.counts[app] ?: CountRow(0, 0, 0)
-                                Row(
-                                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Text(Apps.displayName(app), style = MiuixTheme.textStyles.body1)
+                        // right card: accounts summary + credits total
+                        Card(modifier = Modifier.weight(1f)) {
+                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("账号", style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Bold)
+                                val totalEnabled = Apps.ALL.sumOf { s.counts[it]?.enabled ?: 0 }
+                                val totalCount = Apps.ALL.sumOf { s.counts[it]?.total ?: 0 }
+                                Text(
+                                    "$totalEnabled/$totalCount",
+                                    style = MiuixTheme.textStyles.title2,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (totalCount > 0) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                )
+                                Apps.ALL.forEach { app ->
+                                    val c = s.counts[app] ?: CountRow(0, 0, 0)
                                     Text(
-                                        "${c.enabled}/${c.total} 启用" + if (c.needsRelogin > 0) " · ${c.needsRelogin} 需重登" else "",
-                                        style = MiuixTheme.textStyles.body2,
+                                        "${Apps.displayName(app)} ${c.enabled}/${c.total}" + if (c.needsRelogin > 0) " · ${c.needsRelogin}需重登" else "",
+                                        style = MiuixTheme.textStyles.footnote2,
                                         color = if (c.needsRelogin > 0) MiuixTheme.colorScheme.error else MiuixTheme.colorScheme.onSurfaceVariantSummary,
                                     )
                                 }
+                                Spacer(Modifier.height(2.dp))
+                                Text("积分", style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Bold)
+                                val totalTxt = snapshot?.let { "%.0f".format(it.total) } ?: "…"
+                                Text(
+                                    totalTxt,
+                                    style = MiuixTheme.textStyles.title2,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MiuixTheme.colorScheme.primary,
+                                )
                             }
                         }
                     }
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(8.dp))
                     if (msg.isNotEmpty()) {
                         Text(msg, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.primary)
                         Spacer(Modifier.height(8.dp))
@@ -413,11 +438,23 @@ fun HomePage() {
                 }
             }
 
-            // ── 积分变动（签到前后对比） ──
+            // ── 近期积分变动（签到前后对比） ──
             item {
-                SmallTitle(text = "积分变动")
+                val todayDiffs = diffs.filter { it.date == todayStr() }
+                val todaySum = todayDiffs.mapNotNull { it.delta }.sum()
+                SmallTitle(text = "近期积分变动")
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // header row: 今日合计 +N on the right
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("今日", style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Bold)
+                            Text(
+                                (if (todaySum >= 0) "+" else "") + todaySum,
+                                style = MiuixTheme.textStyles.title3,
+                                fontWeight = FontWeight.Bold,
+                                color = if (todaySum >= 0) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.error,
+                            )
+                        }
                         if (diffs.isEmpty()) {
                             Text(
                                 "暂无记录。每轮签到前后各读取一次积分并对比，变动会显示在这里。",
@@ -425,28 +462,6 @@ fun HomePage() {
                                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                             )
                         } else {
-                            val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date())
-                            val todayDiffs = diffs.filter { it.date == today }
-                            val todaySum = todayDiffs.mapNotNull { it.delta }.sum()
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Bottom) {
-                                Column {
-                                    Text("今日合计", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-                                    Text(
-                                        (if (todaySum >= 0) "+" else "") + todaySum.toString(),
-                                        style = MiuixTheme.textStyles.title2,
-                                        fontSize = 28.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (todaySum >= 0) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.error,
-                                    )
-                                }
-                                Text(
-                                    "${todayDiffs.size} 条今日记录 · 近 90 天滚动",
-                                    style = MiuixTheme.textStyles.footnote2,
-                                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                                    modifier = Modifier.align(Alignment.Bottom),
-                                )
-                            }
-                            Spacer(Modifier.height(4.dp))
                             diffs.take(20).forEach { d ->
                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                     Column(Modifier.weight(1f)) {

@@ -74,9 +74,11 @@ data class StatusView(
     val counts: Map<String, CountRow>,
     val nextApp: String?,
     val nextInSecs: Long?,
+    /** per-app last round result (time / ok / already / failed). */
+    val lastRounds: Map<String, RoundRow>,
 )
 
-data class CountRow(val total: Int, val enabled: Int, val needsRelogin: Int)
+data class RoundRow(val time: String, val ok: Int, val already: Int, val failed: Int)
 
 fun parseStatus(o: com.google.gson.JsonObject): StatusView {
     val cfg = o.getAsJsonObject("config")
@@ -87,6 +89,16 @@ fun parseStatus(o: com.google.gson.JsonObject): StatusView {
             total = c.get("total")?.asInt ?: 0,
             enabled = c.get("enabled")?.asInt ?: 0,
             needsRelogin = c.get("needs_relogin")?.asInt ?: 0,
+        )
+    }
+    val lastRounds = mutableMapOf<String, RoundRow>()
+    o.getAsJsonObject("last_rounds")?.entrySet()?.forEach { (app, v) ->
+        val r = v.asJsonObject
+        lastRounds[app] = RoundRow(
+            time = r.get("time")?.asString.orEmpty(),
+            ok = r.get("ok")?.asInt ?: 0,
+            already = r.get("already")?.asInt ?: 0,
+            failed = r.get("failed")?.asInt ?: 0,
         )
     }
     val next = o.getAsJsonObject("next")
@@ -100,6 +112,7 @@ fun parseStatus(o: com.google.gson.JsonObject): StatusView {
         counts = counts,
         nextApp = next?.get("app")?.asString,
         nextInSecs = next?.get("in_secs")?.takeIf { !it.isJsonNull }?.asLong,
+        lastRounds = lastRounds,
     )
 }
 
@@ -188,3 +201,7 @@ fun fmtExpire(ts: Long?): String = when (ts) {
         "%04d-%02d-%02d".format(d.year, d.monthValue, d.dayOfMonth)
     }
 }
+
+/** Local date (yyyy-MM-dd) for "today" comparisons. */
+fun todayStr(): String =
+    java.time.LocalDate.now().toString()
