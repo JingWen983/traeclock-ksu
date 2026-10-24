@@ -12,8 +12,8 @@ android {
         applicationId = "cn.traeclock.manager"
         minSdk = 26
         targetSdk = 37
-        versionCode = 30
-        versionName = "0.5.16"
+        versionCode = 31
+        versionName = "0.5.17"
     }
 
     buildTypes {
