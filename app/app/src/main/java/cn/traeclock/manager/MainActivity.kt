@@ -280,6 +280,7 @@ fun HomePage() {
         val scope = rememberCoroutineScope()
         var status by remember { mutableStateOf(DataCache.status) }
         var snapshot by remember { mutableStateOf(DataCache.credits) }
+        var diffs by remember { mutableStateOf<List<CreditDiffRow>>(emptyList()) }
         var busy by remember { mutableStateOf(false) }
         var msg by remember { mutableStateOf("") }
         var refreshing by remember { mutableStateOf(false) }
@@ -299,7 +300,13 @@ fun HomePage() {
                 refreshing = false
             }
         }
-        LaunchedEffect(Unit) { refreshStatus(); refreshCredits() }
+        fun refreshDiffs() {
+            scope.launch {
+                val d = withContext(Dispatchers.IO) { RootCtl.creditDiffs().map { parseCreditDiff(it) } }
+                diffs = d
+            }
+        }
+        LaunchedEffect(Unit) { refreshStatus(); refreshCredits(); refreshDiffs() }
         // real-time dashboard: auto refresh every 60s while page stays open
         LaunchedEffect(Unit) {
             while (true) {
@@ -383,6 +390,8 @@ fun HomePage() {
                                 busy = false
                                 msg = if (r.code == 0) "已触发全部签到，结果见日志页" else "触发失败: ${r.stdout.take(120)}"
                                 refreshStatus()
+                                // reload the credit-change records after the round settles
+                                refreshDiffs()
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
@@ -390,6 +399,80 @@ fun HomePage() {
                 } else {
                     Text("加载中…", style = MiuixTheme.textStyles.body2)
                 }
+            }
+
+            // ── 积分变动（签到前后对比） ──
+            item {
+                SmallTitle(text = "积分变动")
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (diffs.isEmpty()) {
+                            Text(
+                                "暂无记录。每轮签到前后各读取一次积分并对比，变动会显示在这里。",
+                                style = MiuixTheme.textStyles.body2,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            )
+                        } else {
+                            val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date())
+                            val todayDiffs = diffs.filter { it.date == today }
+                            val todaySum = todayDiffs.mapNotNull { it.delta }.sum()
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Bottom) {
+                                Column {
+                                    Text("今日合计", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                                    Text(
+                                        (if (todaySum >= 0) "+" else "") + todaySum.toString(),
+                                        style = MiuixTheme.textStyles.title2,
+                                        fontSize = 28.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (todaySum >= 0) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.error,
+                                    )
+                                }
+                                Text(
+                                    "${todayDiffs.size} 条今日记录 · 近 90 天滚动",
+                                    style = MiuixTheme.textStyles.footnote2,
+                                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                    modifier = Modifier.align(Alignment.Bottom),
+                                )
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            diffs.take(20).forEach { d ->
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            "${Apps.displayName(d.app)} · ${d.name.ifEmpty { d.userId }}",
+                                            style = MiuixTheme.textStyles.body2,
+                                        )
+                                        Text(
+                                            d.date + if (d.time.isNotEmpty()) " ${d.time}" else "",
+                                            style = MiuixTheme.textStyles.footnote2,
+                                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                        )
+                                    }
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text(
+                                            d.delta?.let { (if (it >= 0) "+" else "") + it } ?: "—",
+                                            style = MiuixTheme.textStyles.body1,
+                                            fontWeight = FontWeight.Bold,
+                                            color = when {
+                                                d.delta == null -> MiuixTheme.colorScheme.onSurfaceVariantSummary
+                                                d.delta >= 0 -> MiuixTheme.colorScheme.primary
+                                                else -> MiuixTheme.colorScheme.error
+                                            },
+                                        )
+                                        if (d.before != null || d.after != null) {
+                                            Text(
+                                                "${d.before ?: "—"} → ${d.after ?: "—"}",
+                                                style = MiuixTheme.textStyles.footnote2,
+                                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
             }
 
             // ── 实时积分 ──

@@ -904,7 +904,7 @@ dependencies = [
 
 [[package]]
 name = "tc-core"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "aes",
  "base64",
@@ -926,7 +926,7 @@ dependencies = [
 
 [[package]]
 name = "tc-ctl"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "chrono",
  "libc",

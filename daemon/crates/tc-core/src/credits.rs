@@ -441,6 +441,22 @@ fn short(s: &str) -> String {
 
 // ── aggregate ────────────────────────────────────────────────────────────────
 
+/// Single-account balance probe (for check-in before/after diffs): returns
+/// the row's balance rounded to whole credits. None on any failure — the
+/// diff layer treats a missing side as "no reading", never as 0.
+pub fn account_balance(agent: &ureq::Agent, cfg: &AppConfig, acc: &Account) -> Option<i64> {
+    let row = match acc.app.as_str() {
+        crate::store::APP_TRAE => trae_credits(agent, cfg, acc),
+        crate::store::APP_WB => wb_credits(agent, cfg, acc),
+        crate::store::APP_QODER => qoder_credits(agent, cfg, acc),
+        _ => return None,
+    };
+    if !row.ok {
+        return None;
+    }
+    row.balance.map(|b| b.round() as i64)
+}
+
 /// Query all enabled accounts (per app) and return rows in app order.
 /// One account's failure never blocks the others.
 pub fn refresh_all(store: &Store, cfg: &AppConfig) -> Value {

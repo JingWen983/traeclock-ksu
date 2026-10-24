@@ -50,6 +50,7 @@ fn main() {
     let code = match args.first().map(String::as_str) {
         Some("status") => cmd_status(&store),
         Some("credits") => cmd_credits(&store),
+        Some("credit-diffs") => cmd_credit_diffs(&store),
         Some("accounts") => cmd_accounts(&store, args.get(1).map(String::as_str)),
         Some("add") => cmd_add(&store, &args[1..]),
         Some("remove") => cmd_remove(&store, &args[1..]),
@@ -79,7 +80,7 @@ fn main() {
 fn print_usage() {
     eprintln!(
         "usage: traeclockctl <status|accounts|add|remove|enable|disable|run-now|config|log|checkin-log|\
-trae-login-url|trae-callback|trae-refresh|wb-start|wb-poll|qoder-start|qoder-wait|daemon-pid> [args]"
+trae-login-url|trae-callback|trae-refresh|wb-start|wb-poll|qoder-start|qoder-wait|credits|credit-diffs|daemon-pid> [args]"
     );
 }
 
@@ -96,6 +97,14 @@ fn err_json(msg: String) -> i32 {
 fn cmd_credits(store: &Store) -> i32 {
     let cfg = store.config();
     ok_json(tc_core::credits::refresh_all(store, &cfg))
+}
+
+/// Check-in credit changes (before/after per round), newest first.
+fn cmd_credit_diffs(store: &Store) -> i32 {
+    let state = store.state();
+    let mut diffs = state.credit_diffs;
+    diffs.sort_by(|a, b| (b.date.clone() + " " + &b.time).cmp(&(a.date.clone() + " " + &a.time)));
+    ok_json(serde_json::json!({ "ok": true, "diffs": diffs }))
 }
 
 fn cmd_status(store: &Store) -> i32 {

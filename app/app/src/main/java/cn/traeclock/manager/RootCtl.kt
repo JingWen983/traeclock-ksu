@@ -78,6 +78,12 @@ object RootCtl {
     /** Real-time credits query across all enabled accounts (network on device). */
     fun credits(): JsonObject? = call("credits").json()
 
+    /** Check-in credit changes (before/after each round), newest first. */
+    fun creditDiffs(): List<JsonObject> {
+        val obj = call("credit-diffs").json() ?: return emptyList()
+        return obj.getAsJsonArray("diffs")?.map { it.asJsonObject } ?: emptyList()
+    }
+
     fun accounts(app: String? = null): List<JsonObject> {
         val args = mutableListOf("accounts")
         app?.let { args.add(it) }

@@ -40,6 +40,29 @@ fun parseAccount(o: com.google.gson.JsonObject): AccountRow = AccountRow(
     deviceId = o.get("device_id")?.takeIf { !it.isJsonNull }?.asString,
 )
 
+/** Check-in credit change record (before/after round balance readings). */
+data class CreditDiffRow(
+    val date: String,
+    val time: String,
+    val app: String,
+    val userId: String,
+    val name: String,
+    val before: Long?,
+    val after: Long?,
+    val delta: Long?,
+)
+
+fun parseCreditDiff(o: com.google.gson.JsonObject): CreditDiffRow = CreditDiffRow(
+    date = o.get("date")?.asString.orEmpty(),
+    time = o.get("time")?.asString.orEmpty(),
+    app = o.get("app")?.asString.orEmpty(),
+    userId = o.get("user_id")?.asString.orEmpty(),
+    name = o.get("name")?.asString.orEmpty(),
+    before = o.get("before")?.takeIf { !it.isJsonNull }?.asLong,
+    after = o.get("after")?.takeIf { !it.isJsonNull }?.asLong,
+    delta = o.get("delta")?.takeIf { !it.isJsonNull }?.asLong,
+)
+
 /** Status view model parsed from `traeclockctl status` JSON. */
 data class StatusView(
     val daemonPid: Long?,

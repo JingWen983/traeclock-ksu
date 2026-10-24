@@ -95,6 +95,30 @@ pub struct RunState {
     pub last_rounds: HashMap<String, RoundRecord>,
     /// Rolling credits history (90 days), one record per account per day.
     pub credits_history: Vec<CreditRecord>,
+    /// Rolling check-in credit diffs (90 days): balance read before + after
+    /// each round, latest per (date, app, user_id).
+    pub credit_diffs: Vec<CreditDiff>,
+}
+
+/// One account's credit balance change across a check-in round: the balance
+/// is queried right before the round and right after, and the movement is
+/// recorded (positive = earned, negative = consumed meanwhile).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CreditDiff {
+    /// Local date (YYYY-MM-DD).
+    pub date: String,
+    /// Local time of the AFTER reading (HH:MM:SS).
+    pub time: String,
+    pub app: String,
+    pub user_id: String,
+    pub name: String,
+    /// Balance before the round (None if the pre-read failed).
+    pub before: Option<i64>,
+    /// Balance after the round (None if the post-read failed).
+    pub after: Option<i64>,
+    /// after − before (None when either side is missing).
+    pub delta: Option<i64>,
 }
 
 impl RunState {
@@ -107,6 +131,19 @@ impl RunState {
             .format("%Y-%m-%d")
             .to_string();
         self.credits_history.retain(|r| r.date >= cutoff);
+    }
+
+    /// Append a BEFORE/AFTER credit diff record (check-in credit-change
+    /// tracking). Same 90-day retention; latest wins per
+    /// (date, app, user_id).
+    pub fn push_credit_diff(&mut self, rec: CreditDiff) {
+        self.credit_diffs
+            .retain(|r| !(r.date == rec.date && r.user_id == rec.user_id && r.app == rec.app));
+        self.credit_diffs.push(rec);
+        let cutoff = (chrono::Local::now().date_naive() - chrono::Duration::days(90))
+            .format("%Y-%m-%d")
+            .to_string();
+        self.credit_diffs.retain(|r| r.date >= cutoff);
     }
 }
 
