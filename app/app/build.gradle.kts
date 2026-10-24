@@ -47,8 +47,6 @@ dependencies {
     implementation("androidx.compose.ui:ui:$composeVersion")
     implementation("androidx.compose.ui:ui-tooling-preview:$composeVersion")
     implementation("androidx.compose.foundation:foundation:$composeVersion")
-    // Liquid Glass bottom bar (Kyant0/AndroidLiquidGlass)
-    implementation("io.github.kyant0:backdrop:1.0.6")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
     implementation("androidx.core:core-ktx:1.13.1")
     // Miuix (HyperOS design) — replaces the Material chrome layer (stable 0.9.4)

@@ -16,18 +16,18 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.shape.CircleShape
-import com.kyant.backdrop.backdrops.layerBackdrop
-import com.kyant.backdrop.backdrops.rememberLayerBackdrop
-import com.kyant.backdrop.drawBackdrop
-import com.kyant.backdrop.effects.blur
-import com.kyant.backdrop.effects.lens
-import com.kyant.backdrop.effects.vibrancy
 import dev.chrisbanes.haze.HazeProgressive
 import dev.chrisbanes.haze.HazeTint
 import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
 import top.yukonga.miuix.kmp.basic.TopAppBar
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Add
 import top.yukonga.miuix.kmp.icon.extended.Contacts
@@ -200,68 +200,42 @@ fun TraeClockApp() {
     }
 }
 
-/** HyperNavBar-style liquid glass bottom bar: pill backdrop with vibrancy +
- *  blur + lens refraction, selected pill indicator, miuix extended icons. */
+/** Full HyperNavBar/SukiSU liquid glass bar (ported components in ui/liquid/,
+ *  GPL-3.0 — TraeClock is GPL-3.0 as a whole since this port). Wraps the
+ *  upstream LiquidGlassNavigationBar with our tab model. */
 @Composable
 private fun LiquidGlassBottomBar(
     tabs: List<String>,
     icons: List<androidx.compose.ui.graphics.vector.ImageVector>,
     selected: Int,
     onSelect: (Int) -> Unit,
-    backdrop: com.kyant.backdrop.Backdrop,
+    backdrop: top.yukonga.miuix.kmp.blur.Backdrop,
     modifier: Modifier = Modifier,
 ) {
-    val containerColor = MiuixTheme.colorScheme.surfaceContainer.copy(0.4f)
-    var tabWidthPx by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
-    var totalWidthPx by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
-    val density = androidx.compose.ui.platform.LocalDensity.current
-
-    Box(
-        modifier
-            .navigationBarsPadding()
-            .padding(horizontal = 24.dp, vertical = 10.dp)
-            .fillMaxWidth()
-            .height(64.dp)
-            .drawBackdrop(
-                backdrop = backdrop,
-                shape = { CircleShape },
-                effects = {
-                    vibrancy()
-                    blur(4.dp.toPx())
-                    lens(refractionHeight = 24.dp.toPx(), refractionAmount = 24.dp.toPx())
-                },
-                onDrawSurface = { drawRect(containerColor) },
-            ),
-    ) {
-        Row(
-            Modifier
-                .fillMaxSize()
-                .onGloballyPositioned { coords ->
-                    totalWidthPx = coords.size.width.toFloat()
-                    tabWidthPx = totalWidthPx / tabs.size
-                },
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+    val navigationBarBottom = androidx.compose.foundation.layout.WindowInsets
+        .navigationBars.asPaddingValues().calculateBottomPadding()
+    val bottomPadding = if (navigationBarBottom != 0.dp) 8.dp + navigationBarBottom else 28.dp
+    Box(modifier = modifier.fillMaxWidth()) {
+        cn.traeclock.manager.ui.liquid.LiquidGlassNavigationBar(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .pointerInput(Unit) { androidx.compose.foundation.gestures.detectTapGestures { } }
+                .padding(start = 28.dp, end = 28.dp, bottom = bottomPadding),
+            selectedIndex = selected,
+            onSelected = onSelect,
+            backdrop = backdrop,
+            tabsCount = tabs.size,
+        ) { activateTab ->
             tabs.forEachIndexed { index, label ->
-                val sel = index == selected
-                Column(
-                    Modifier
-                        .weight(1f)
-                        .fillMaxSize()
-                        .clickable(interactionSource = null, indication = null) { onSelect(index) },
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
+                cn.traeclock.manager.ui.liquid.LiquidGlassNavigationBarItem(
+                    selected = selected == index,
+                    onClick = { activateTab(index) },
+                    modifier = Modifier.defaultMinSize(minWidth = 76.dp),
                 ) {
-                    Icon(
-                        imageVector = icons[index],
-                        contentDescription = label,
-                        tint = if (sel) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    )
+                    Icon(imageVector = icons[index], contentDescription = label)
                     Text(
-                        label,
+                        text = label,
                         style = MiuixTheme.textStyles.footnote2,
-                        color = if (sel) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     )
                 }
             }

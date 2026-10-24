@@ -62,3 +62,8 @@
 
 MIT（沿用上游 TraeWorkAssistant 的授权与版权声明；派生项目说明：以
 [smart-open/TraeWorkAssistant](https://github.com/smart-open/TraeWorkAssistant) 为基础移植）。
+
+
+## 许可
+
+本项目管理器 App 的液态玻璃底栏组件移植自 [HyperNavBar](https://github.com/HyperNavBar/HyperNavBar)（其又移植自 SukiSU-Ultra），该部分以 **GPL-3.0** 授权；因此本项目整体以 **GPL-3.0** 发布（原 MIT 许可的其余历史版本不受影响）。
