@@ -19,7 +19,7 @@ use crate::envelope::dig;
 use crate::events::{Event, Sink};
 use crate::http;
 use crate::store::{Account, Store, APP_QODER};
-use crate::util::{random_hex, sha256_hex};
+use crate::util::sha256_hex;
 
 pub const OPEN_API_BASE: &str = "https://openapi.qoder.com.cn";
 pub const WEB_BASE: &str = "https://qoder.cn";
@@ -354,74 +354,357 @@ pub fn parse_poll_success(body: &Value, expected_nonce: &str) -> Option<(QoderCr
     ))
 }
 
-fn truncate(s: &str, n: usize) -> String {
-    s.chars().take(n).collect()
+
+
+// ── check-in round (upstream v3.8.3 port) ───────────────────────────────────
+//
+// Port of tasks/qoder_checkin.rs @ origin/main (commits 541f33b, f4888f6,
+// f5f2cd3, 72447db): the old `/device/campaigns/*` endpoints never existed in
+// the upstream implementation — the real flow is:
+//   GET  {base}/sash/api/v1/me/campaigns              (list, full headers)
+//   POST {base}/sash/api/v1/me/campaigns/{id}/claim   (idempotent claim,
+//        MINIMAL headers — the device-fingerprint header family gets claim
+//        requests 503-blocked by upstream risk control, issue #114)
+// Daily campaign ids rotate; the pipeline is: learn from list → zero-CLAIMABLE
+// → check CLAIMED grant in list → blind-claim fallback (learned ids first,
+// known table兜底) → same-round relearn (main list + minimal-header fetch)
+// with 409 CAMPAIGN_NOT_ACTIVE pruning.
+
+pub const CAMPAIGN_NOT_ACTIVE_TAG: &str = "CAMPAIGN_NOT_ACTIVE";
+
+/// Known daily campaigns table (upstream constant, last-resort fallback):
+/// (campaignId, display name). Upstream rotates these via probes; the learned
+/// list and minimal-header relearn are the primary sources.
+const KNOWN_DAILY_CAMPAIGNS: &[(&str, &str)] = &[
+    ("01a130ea-7c31-71b3-a22b-cbe019571350", "每日领 100 Credits"),
+];
+
+fn minimal_auth_headers(access_token: &str) -> Vec<(String, String)> {
+    vec![
+        ("Authorization".to_string(), format!("Bearer {access_token}")),
+        ("Cosy-ClientType".to_string(), COSY_CLIENT_TYPE.to_string()),
+        ("User-Agent".to_string(), CLIENT_USER_AGENT.to_string()),
+        ("Content-Type".to_string(), "application/json".to_string()),
+    ]
 }
 
-// ── check-in round ───────────────────────────────────────────────────────────
-
-/// Campaign list → (campaign_id, kind) pairs claimable by this account.
-fn fetch_campaigns(agent: &ureq::Agent, cfg: &AppConfig, creds: &QoderCreds) -> Vec<(String, String)> {
-    let h = build_auth_headers(cfg, creds);
-    let (status, body, _raw) = http::post_json(
-        agent,
-        &format!("{OPEN_API_BASE}/device/campaigns/list"),
-        &h,
-        &json!({}),
-    );
-    if status != 200 {
-        return Vec::new();
-    }
-    let Some(b) = body else { return Vec::new() };
-    dig(&b, &["campaigns", "items"])
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|c| {
-                    let id = dig(c, &["campaignId", "id"]).and_then(|v| v.as_str())?;
-                    let status_v = dig(c, &["status", "claimStatus"]).and_then(|v| v.as_str()).unwrap_or("");
-                    let claimable = dig(c, &["claimable"]).and_then(|v| v.as_bool()).unwrap_or(false);
-                    (claimable || status_v.eq_ignore_ascii_case("claimable"))
-                        .then(|| (id.to_string(), dig(c, &["type", "campaignType"]).and_then(|v| v.as_str()).unwrap_or("").to_string()))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+fn s_of(v: Option<&Value>) -> String {
+    v.and_then(Value::as_str).unwrap_or("").to_string()
 }
 
-/// Claim one campaign → (ok, message).
-fn claim_campaign(agent: &ureq::Agent, cfg: &AppConfig, creds: &QoderCreds, id: &str) -> (bool, String) {
-    let h = build_auth_headers(cfg, creds);
-    let (status, body, raw) = http::post_json(
-        agent,
-        &format!("{OPEN_API_BASE}/device/campaigns/claim"),
-        &h,
-        &json!({ "campaignId": id, "requestId": random_hex(16) }),
-    );
-    if status == 0 {
-        return (false, "网络不可达".into());
+fn num_or_none(v: Option<&Value>) -> Option<f64> {
+    v?.as_f64().or_else(|| v?.as_str()?.trim().parse().ok())
+}
+
+/// (campaignId, display name) from a campaign entry (path-safe id whitelist).
+fn learned_entry_from(c: &Value) -> Option<(String, String)> {
+    let cid = s_of(dig(c, &["campaignId", "campaign_id"]));
+    if cid.is_empty() || !cid.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-') {
+        return None;
     }
-    let code_ok = body
-        .as_ref()
-        .and_then(|b| dig(b, &["code"]).and_then(|v| v.as_i64()))
-        .map(|c| c == 0)
-        .unwrap_or((200..300).contains(&status));
-    let msg = body
-        .as_ref()
-        .and_then(|b| dig(b, &["message", "msg", "errorMessage"]).and_then(|v| v.as_str()).map(String::from))
-        .unwrap_or_else(|| truncate(&raw, 120));
-    // already-claimed tolerance (source treats repeat claims as already)
-    let low = msg.to_ascii_lowercase();
-    if code_ok || low.contains("already") || msg.contains("已领") || status == 503 && low.contains("repeat") {
-        if low.contains("already") || msg.contains("已领") {
-            return (true, "今日已领取".into());
+    let cname = s_of(dig(c, &["name", "title", "campaignName", "campaign_name"]));
+    let cname = if cname.is_empty() { cid.chars().take(8).collect() } else { cname };
+    Some((cid, cname))
+}
+
+fn merge_learned(out: &mut Vec<(String, String)>, entries: Vec<(String, String)>) {
+    for (cid, cname) in entries {
+        if !out.iter().any(|(e, _)| *e == cid) {
+            out.push((cid, cname));
         }
-        return (true, "领取成功".into());
     }
-    (false, msg)
 }
 
-/// One Qoder round: per account ensure fresh → list campaigns → claim each.
+fn benefit_is_credits(c: &Value) -> bool {
+    c.get("benefit").and_then(|x| x.get("kind"))
+        .map(|v| s_of(Some(v)).to_ascii_uppercase() == "CREDITS")
+        .unwrap_or(false)
+}
+
+fn is_claim_benefit(c: &Value) -> bool {
+    s_of(c.get("actionType")).to_ascii_uppercase() == "CLAIM_BENEFIT"
+}
+
+/// Strict-tier learning: CLAIM_BENEFIT + CREDITS + inside the daily window.
+fn learn_daily_campaign_ids(campaigns: &[Value], now_secs: i64) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for c in campaigns {
+        let start = c.get("startAt").and_then(|v| num_or_none(Some(v))).map(|v| v as i64);
+        let end = c.get("endAt").and_then(|v| num_or_none(Some(v))).map(|v| v as i64);
+        let in_window = matches!((start, end), (Some(s), Some(e)) if now_secs >= s && now_secs <= e);
+        if is_claim_benefit(c) && benefit_is_credits(c) && in_window {
+            if let Some(entry) = learned_entry_from(c) {
+                merge_learned(&mut out, vec![entry]);
+            }
+        }
+    }
+    out
+}
+
+/// Lenient-tier learning (issue #105): first non-empty tier wins.
+/// A: CLAIM_BENEFIT + CREDITS (no window) / B: CREDITS only / C: CLAIM_BENEFIT + name contains 每日.
+fn learn_daily_campaign_ids_lenient(campaigns: &[Value]) -> Vec<(String, String)> {
+    let learn = |pred: &dyn Fn(&Value) -> bool| -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for c in campaigns {
+            if pred(c) {
+                if let Some(entry) = learned_entry_from(c) {
+                    merge_learned(&mut out, vec![entry]);
+                }
+            }
+        }
+        out
+    };
+    let tier_a = learn(&|c| is_claim_benefit(c) && benefit_is_credits(c));
+    if !tier_a.is_empty() { return tier_a; }
+    let tier_b = learn(&|c| benefit_is_credits(c));
+    if !tier_b.is_empty() { return tier_b; }
+    learn(&|c| is_claim_benefit(c) && s_of(c.get("name")).contains("每日"))
+}
+
+/// Raw list fetch (GET /sash/api/v1/me/campaigns): full list, empty allowed.
+/// Ok(list) | Err(("auth"|"fail", message)).
+fn fetch_campaigns_raw(agent: &ureq::Agent, headers: &[(String, String)]) -> Result<Vec<Value>, (String, String)> {
+    let (status, body, raw) = http::get_json(agent, &format!("{OPEN_API_BASE}/sash/api/v1/me/campaigns"), headers);
+    if status == 401 {
+        return Err(("auth".into(), "登录态失效（401）".into()));
+    }
+    if status == 0 {
+        let head: String = raw.chars().take(120).collect();
+        return Err(("fail".into(), format!("网络不可达: {head}")));
+    }
+    if !(200..=201).contains(&status) {
+        return Err(("fail".into(), format!("campaigns 不可用（HTTP {status}）")));
+    }
+    let Some(b) = body.filter(|b| b.is_object()) else {
+        return Err(("fail".into(), "campaigns 响应非 JSON".into()));
+    };
+    Ok(dig(&b, &["campaigns"]).and_then(Value::as_array).cloned().unwrap_or_default())
+}
+
+fn filter_claimable(campaigns: &[Value]) -> Vec<Value> {
+    campaigns
+        .iter()
+        .filter(|c| s_of(dig(c, &["claimStatus", "claim_status"])).to_ascii_uppercase() == "CLAIMABLE")
+        .cloned()
+        .collect()
+}
+
+/// Does the list contain today's CLAIMED daily-credits grant (server shows
+/// claimed grants unconditionally → real "already", no request needed)?
+fn daily_credits_claimed_in_list(campaigns: &[Value], now_secs: i64) -> bool {
+    campaigns.iter().any(|c| {
+        let claimed = s_of(dig(c, &["claimStatus", "claim_status"])).to_ascii_uppercase() == "CLAIMED";
+        let start = c.get("startAt").and_then(|v| num_or_none(Some(v))).map(|v| v as i64);
+        let end = c.get("endAt").and_then(|v| num_or_none(Some(v))).map(|v| v as i64);
+        let in_window = matches!((start, end), (Some(s), Some(e)) if now_secs >= s && now_secs <= e);
+        claimed && is_claim_benefit(c) && benefit_is_credits(c) && in_window
+    })
+}
+
+/// POST-empty with the minimal header family → (status, body, raw).
+/// post_json sends `{}` as the body — the upstream claim POST is bodyless but
+/// an empty JSON object is accepted the same way (content-type json, no fields).
+fn post_empty(agent: &ureq::Agent, url: &str, headers: &[(String, String)]) -> (i32, Option<Value>, String) {
+    http::post_json(agent, url, headers, &json!({}))
+}
+
+/// Blind-step classification (pure; 宁 fail 不假 already).
+enum BlindStep {
+    FreshClaim,
+    Replay,
+    Auth,
+    Failed(i32),
+}
+
+fn classify_blind_step(status: i32, claimed: Option<String>, replayed: bool, kind: Option<&str>) -> BlindStep {
+    if status == 401 {
+        return BlindStep::Auth;
+    }
+    if (200..=201).contains(&status) {
+        return match claimed.as_deref() {
+            Some("CLAIMED") => {
+                if kind.is_some_and(|k| !k.eq_ignore_ascii_case("CREDITS")) {
+                    return BlindStep::Failed(status);
+                }
+                if replayed { BlindStep::Replay } else { BlindStep::FreshClaim }
+            }
+            _ => BlindStep::Failed(status),
+        };
+    }
+    BlindStep::Failed(status)
+}
+
+fn describe_blind_failure(code: i32, claimed: Option<&str>, raw: &str) -> String {
+    if claimed == Some("BLOCKED") {
+        return "服务端风控拦截（status=BLOCKED）——该账号设备指纹未建立服务端信任：请在 Qoder 客户端正常使用一次后重试".into();
+    }
+    if code == 503 && raw.contains("RISK_DEPENDENCY_UNAVAILABLE") {
+        return "服务端风控依赖暂不可用（503），稍后将自动重试".into();
+    }
+    if code == 409 && raw.contains(CAMPAIGN_NOT_ACTIVE_TAG) {
+        return "每日活动 id 已过期（409 CAMPAIGN_NOT_ACTIVE，活动批次轮换）——将当轮重学后重试".into();
+    }
+    let head: String = raw.chars().take(120).collect();
+    format!("（HTTP {code}）{head}")
+}
+
+#[derive(Clone, Default)]
+struct BlindRound {
+    messages: Vec<String>,
+    fail_parts: Vec<String>,
+    stale_parts: Vec<String>,
+    reward: Option<f64>,
+    any_fresh: bool,
+    any_replay: bool,
+    auth: bool,
+}
+
+impl BlindRound {
+    fn stale_only(&self) -> bool {
+        !self.stale_parts.is_empty() && !self.any_fresh && !self.any_replay && self.fail_parts.is_empty()
+    }
+    fn merge(mut self, other: BlindRound) -> BlindRound {
+        self.messages.extend(other.messages);
+        self.fail_parts.extend(other.fail_parts);
+        self.stale_parts.extend(other.stale_parts);
+        self.reward = other.reward.or(self.reward);
+        self.any_fresh |= other.any_fresh;
+        self.any_replay |= other.any_replay;
+        self.auth |= other.auth;
+        self
+    }
+    fn aggregate(self) -> (String, String, Option<f64>) {
+        if self.auth {
+            return ("auth".into(), "登录态失效（401）".into(), self.reward);
+        }
+        if self.any_fresh {
+            return ("success".into(), self.messages.join("；"), self.reward);
+        }
+        if self.any_replay {
+            return ("already".into(), "每日奖励已领取（盲发回放确认）".into(), self.reward);
+        }
+        let mut all = self.fail_parts.clone();
+        all.extend(self.stale_parts.clone());
+        let msg = if all.is_empty() { "盲发无候选可用".into() } else { all.join("；") };
+        ("fail".into(), msg, self.reward)
+    }
+}
+
+fn blind_round(
+    agent: &ureq::Agent,
+    access_token: &str,
+    candidates: &[(String, String)],
+    learned: &mut Vec<(String, String)>,
+    table: &mut Vec<(String, String)>,
+) -> BlindRound {
+    let headers = minimal_auth_headers(access_token);
+    let mut round = BlindRound::default();
+    for (cid, cname) in candidates {
+        if cid.is_empty() || !cid.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+            continue;
+        }
+        let url = format!("{OPEN_API_BASE}/sash/api/v1/me/campaigns/{cid}/claim");
+        let (status, body, raw) = post_empty(agent, &url, &headers);
+        let claimed = body.as_ref().and_then(|b| dig(b, &["status", "data.status"])).map(|v| s_of(Some(v)).to_ascii_uppercase());
+        let replayed = body.as_ref().and_then(|b| dig(b, &["replayed", "data.replayed"])).and_then(Value::as_bool).unwrap_or(false);
+        let kind = body.as_ref().and_then(|b| b.get("benefit")).and_then(|x| x.get("kind")).and_then(Value::as_str);
+        match classify_blind_step(status, claimed.clone(), replayed, kind) {
+            BlindStep::Auth => { round.auth = true; return round; }
+            BlindStep::FreshClaim => {
+                let amt = body.as_ref().and_then(|b| b.get("benefit")).and_then(|x| x.get("amount")).and_then(|v| num_or_none(Some(v)));
+                round.any_fresh = true;
+                round.messages.push(format!("{cname}（盲发直领）"));
+                if let Some(a) = amt { round.reward = Some(round.reward.unwrap_or(0.0) + a); }
+            }
+            BlindStep::Replay => { round.any_replay = true; }
+            BlindStep::Failed(code) => {
+                let reason = describe_blind_failure(code, claimed.as_deref(), &raw);
+                if code == 409 && raw.contains(CAMPAIGN_NOT_ACTIVE_TAG) {
+                    learned.retain(|(e, _)| e != cid);
+                    table.retain(|(e, _)| e != cid);
+                    round.stale_parts.push(format!("{cname} 盲发失败：{reason}"));
+                } else {
+                    round.fail_parts.push(format!("{cname} 盲发失败：{reason}"));
+                }
+            }
+        }
+    }
+    round
+}
+
+/// Minimal-header relearn: fetch the list with the minimal family and learn
+/// the daily campaign id (best effort; never blocks the main flow).
+fn learn_from_min_headers(agent: &ureq::Agent, access_token: &str, now_secs: i64) -> Vec<(String, String)> {
+    match fetch_campaigns_raw(agent, &minimal_auth_headers(access_token)) {
+        Ok(campaigns) => learn_daily_campaign_ids(&campaigns, now_secs),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Blind fallback + same-round self-healing: learned-first candidates, table
+/// fallback; stale-only outcome → main-list relearn (lenient) → still stale →
+/// minimal-header relearn → retry untried ids.
+fn fallback_with_relearn(
+    agent: &ureq::Agent,
+    access_token: &str,
+    learned: &mut Vec<(String, String)>,
+    table: &mut Vec<(String, String)>,
+) -> (String, String, Option<f64>) {
+    let mut attempted: Vec<String> = learned.iter().map(|(c, _)| c.clone()).collect();
+    for (cid, _) in table.iter() {
+        if !attempted.iter().any(|c| c == cid) {
+            attempted.push(cid.clone());
+        }
+    }
+    // candidates: learned first, table deduped after
+    let mut candidates: Vec<(String, String)> = learned.clone();
+    for (cid, cname) in table.iter() {
+        if !candidates.iter().any(|(e, _)| e == cid) {
+            candidates.push((cid.clone(), cname.clone()));
+        }
+    }
+    let tried: Vec<String> = candidates.iter().map(|(cid, _)| cid.clone()).collect();
+    let first = blind_round(agent, access_token, &candidates, learned, table);
+    if first.auth {
+        return first.aggregate();
+    }
+    if !first.stale_only() {
+        return first.aggregate();
+    }
+    // same-round relearn #1: main list, lenient tiers, untried ids only
+    let mut retry: Vec<(String, String)> = Vec::new();
+    if let Ok(campaigns) = fetch_campaigns_raw(agent, &minimal_auth_headers(access_token)) {
+        merge_learned(&mut retry, learn_daily_campaign_ids_lenient(&campaigns));
+    }
+    retry.retain(|(cid, _)| !tried.iter().any(|t| t == cid));
+    let second = if retry.is_empty() {
+        None
+    } else {
+        merge_learned(learned, retry.clone());
+        let r = blind_round(agent, access_token, &retry, learned, table);
+        if r.auth { return r.aggregate(); }
+        Some(first.clone().merge(r))
+    };
+    let merged = second.unwrap_or(first);
+    if !merged.stale_only() {
+        return merged.aggregate();
+    }
+    // same-round relearn #2: minimal-header fetch (visibility superset)
+    let found = learn_from_min_headers(agent, access_token, chrono::Utc::now().timestamp())
+        .into_iter()
+        .filter(|(cid, _)| !attempted.iter().any(|c| c == cid))
+        .collect::<Vec<_>>();
+    if found.is_empty() {
+        return merged.aggregate();
+    }
+    merge_learned(learned, found.clone());
+    let third = blind_round(agent, access_token, &found, learned, table);
+    merged.merge(third).aggregate()
+}
+
+/// One Qoder round: per account ensure fresh → list campaigns → claim each →
+/// zero-CLAIMABLE fallback chain. Shared learned pool across accounts.
 pub fn run_round(store: &Store, cfg: &AppConfig, sink: &mut dyn Sink) -> Value {
     let accounts_file = store.accounts();
     let accounts: Vec<Account> = accounts_file
@@ -435,6 +718,11 @@ pub fn run_round(store: &Store, cfg: &AppConfig, sink: &mut dyn Sink) -> Value {
     let mut already = 0usize;
     let mut failed = 0usize;
     let mut file_mut = accounts_file.clone();
+    let mut learned: Vec<(String, String)> = Vec::new();
+    let mut table: Vec<(String, String)> = KNOWN_DAILY_CAMPAIGNS
+        .iter()
+        .map(|(c, n)| (c.to_string(), n.to_string()))
+        .collect();
 
     sink.emit(&Event::start(accounts.len()));
     let now_ms = chrono::Utc::now().timestamp_millis();
@@ -490,39 +778,103 @@ pub fn run_round(store: &Store, cfg: &AppConfig, sink: &mut dyn Sink) -> Value {
             }
             let _ = store.save_accounts(&file_mut);
         }
-        let campaigns = fetch_campaigns(&agent, cfg, &creds);
+
+        // list: full headers; empty → minimal-header refetch once (issue #132)
+        let full_headers = build_auth_headers(cfg, &creds);
+        let min_token = creds.access_token.clone();
+        let mut campaigns = fetch_campaigns_raw(&agent, &full_headers).unwrap_or_default();
+        let mut list_from_min = false;
         if campaigns.is_empty() {
-            // unknown status: not a hard failure (matches failed_empty_campaigns semantics)
-            sink.emit(&Event::account_already(idx, &aid, &name, None));
-            already += 1;
-            continue;
-        }
-        let mut any_ok = false;
-        let mut any_already = true;
-        let mut last_msg = String::new();
-        for (cid, _kind) in &campaigns {
-            let (okc, msg) = claim_campaign(&agent, cfg, &creds, cid);
-            last_msg = msg;
-            if okc {
-                any_ok = true;
-                if last_msg.contains("已领") {
-                    // stays already
-                } else {
-                    any_already = false;
+            if let Ok(c) = fetch_campaigns_raw(&agent, &minimal_auth_headers(&min_token)) {
+                if !c.is_empty() {
+                    campaigns = c;
+                    list_from_min = true;
                 }
-            } else {
-                any_already = false;
             }
         }
-        if any_ok && !any_already {
-            ok += 1;
-            sink.emit(&Event::account_success(idx, &aid, &name, Some(0), &last_msg, None, None));
-        } else if any_already {
-            already += 1;
-            sink.emit(&Event::account_already(idx, &aid, &name, None));
+        // learn from the list (entries are visible regardless of status bucket)
+        merge_learned(&mut learned, learn_daily_campaign_ids(&campaigns, chrono::Utc::now().timestamp()));
+        if learned.is_empty() && !list_from_min {
+            merge_learned(&mut learned, learn_from_min_headers(&agent, &min_token, chrono::Utc::now().timestamp()));
+        }
+
+        let claimable = filter_claimable(&campaigns);
+        let (kind, message, reward) = if claimable.is_empty() {
+            if daily_credits_claimed_in_list(&campaigns, chrono::Utc::now().timestamp()) {
+                ("already".into(), "每日奖励已领取".into(), None)
+            } else {
+                fallback_with_relearn(&agent, &min_token, &mut learned, &mut table)
+            }
         } else {
-            failed += 1;
-            sink.emit(&Event::account_fail(idx, &aid, &name, &last_msg, None, None, None));
+            let mut kind = String::new();
+            let mut messages: Vec<String> = Vec::new();
+            let mut reward: Option<f64> = None;
+            let mut any_fail = false;
+            let mut any_already = false;
+            for c in &claimable {
+                let cid = s_of(dig(c, &["campaignId", "campaign_id"]));
+                let cname = s_of(dig(c, &["name", "title", "campaignName", "campaign_name"]));
+                let url = format!("{OPEN_API_BASE}/sash/api/v1/me/campaigns/{cid}/claim");
+                let (status, body, raw) = post_empty(&agent, &url, &minimal_auth_headers(&min_token));
+                if status == 401 {
+                    kind = "auth".into();
+                    break;
+                }
+                let claimed = body.as_ref().and_then(|b| dig(b, &["status", "data.status"])).map(|v| s_of(Some(v)).to_ascii_uppercase());
+                let replayed = body.as_ref().and_then(|b| dig(b, &["replayed", "data.replayed"])).and_then(Value::as_bool).unwrap_or(false);
+                let bkind = body.as_ref().and_then(|b| b.get("benefit")).and_then(|x| x.get("kind")).and_then(Value::as_str);
+                match classify_blind_step(status, claimed.clone(), replayed, bkind) {
+                    BlindStep::Auth => { kind = "auth".into(); break; }
+                    BlindStep::FreshClaim => {
+                        kind = "success".into();
+                        messages.push(format!("{}（领取成功）", if cname.is_empty() { &cid } else { &cname }));
+                        let amt = body.as_ref().and_then(|b| b.get("benefit")).and_then(|x| x.get("amount")).and_then(|v| num_or_none(Some(v)));
+                        if let Some(a) = amt { reward = Some(reward.unwrap_or(0.0) + a); }
+                    }
+                    BlindStep::Replay => {
+                        any_already = true;
+                        if kind.is_empty() { kind = "already".into(); }
+                        messages.push(format!("{}（已领取）", if cname.is_empty() { &cid } else { &cname }));
+                    }
+                    BlindStep::Failed(code) => {
+                        any_fail = true;
+                        kind = "fail".into();
+                        messages.push(format!("{}：{}", if cname.is_empty() { &cid } else { &cname }, describe_blind_failure(code, claimed.as_deref(), &raw)));
+                    }
+                }
+            }
+            // priority merge: success > fail > already (P2)
+            let final_kind = if kind == "auth" {
+                "auth".to_string()
+            } else if any_fail && !messages.is_empty() && reward.is_some() && !any_already {
+                "fail".into()
+            } else if any_fail && !messages.iter().any(|m| m.contains("领取成功")) {
+                "fail".into()
+            } else if reward.is_some() || messages.iter().any(|m| m.contains("领取成功")) {
+                "success".into()
+            } else if any_already {
+                "already".into()
+            } else if any_fail {
+                "fail".into()
+            } else {
+                "already".into()
+            };
+            (final_kind, messages.join("；"), reward)
+        };
+
+        match kind.as_str() {
+            "success" => {
+                ok += 1;
+                sink.emit(&Event::account_success(idx, &aid, &name, Some(0), &message, reward.map(|r| r as i64), reward.map(|r| r as i64)));
+            }
+            "already" => {
+                already += 1;
+                sink.emit(&Event::account_already(idx, &aid, &name, reward.map(|r| r as i64)));
+            }
+            _ => {
+                failed += 1;
+                sink.emit(&Event::account_fail(idx, &aid, &name, &message, None, None, None));
+            }
         }
     }
 
@@ -539,6 +891,81 @@ pub fn run_round(store: &Store, cfg: &AppConfig, sink: &mut dyn Sink) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Upstream-port contract (issue #114/#132): claim requests must use the
+    /// minimal header family — the device-fingerprint family gets claim POSTs
+    /// 503-blocked by upstream risk control.
+    #[test]
+    fn minimal_headers_exclude_device_fingerprint_family() {
+        let h = minimal_auth_headers("tok");
+        let names: Vec<&str> = h.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(names.contains(&"Authorization"));
+        assert!(names.contains(&"Cosy-ClientType"));
+        assert!(names.contains(&"User-Agent"));
+        assert!(names.contains(&"Content-Type"));
+        assert!(!names.iter().any(|k| k.starts_with("Cosy-Machine")),
+            "device fingerprint headers must NOT be in the minimal family");
+    }
+
+    /// classify_blind_step: replay → Replay, fresh CLAIMED → FreshClaim,
+    /// non-CREDITS kind → Failed even on CLAIMED, unknown shape → Failed.
+    #[test]
+    fn blind_step_classification() {
+        let fresh = classify_blind_step(200, Some("CLAIMED".into()), false, Some("CREDITS"));
+        assert!(matches!(fresh, BlindStep::FreshClaim));
+        let replay = classify_blind_step(200, Some("CLAIMED".into()), true, Some("CREDITS"));
+        assert!(matches!(replay, BlindStep::Replay));
+        let bogo = classify_blind_step(200, Some("CLAIMED".into()), false, Some("BOGO"));
+        assert!(matches!(bogo, BlindStep::Failed(_)));
+        let unknown = classify_blind_step(200, Some("OTHER".into()), false, Some("CREDITS"));
+        assert!(matches!(unknown, BlindStep::Failed(_)));
+        let auth = classify_blind_step(401, None, false, None);
+        assert!(matches!(auth, BlindStep::Auth));
+        let err = classify_blind_step(409, None, false, None);
+        assert!(matches!(err, BlindStep::Failed(409)));
+    }
+
+    /// Learning tiers: strict needs window; lenient falls back A → B → C.
+    #[test]
+    fn campaign_learning_tiers() {
+        let now = 1_700_000_000i64;
+        let in_window = json!({
+            "campaignId": "c1", "actionType": "CLAIM_BENEFIT",
+            "benefit": {"kind": "CREDITS", "amount": 100},
+            "startAt": now - 100, "endAt": now + 100
+        });
+        let out = learn_daily_campaign_ids(&[in_window.clone()], now);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, "c1");
+        // out of window → strict tier misses
+        let mut expired = in_window.clone();
+        expired["startAt"] = json!(now - 2000);
+        expired["endAt"] = json!(now - 1000);
+        assert!(learn_daily_campaign_ids(&[expired.clone()], now).is_empty());
+        // lenient tier A still learns it (no window requirement)
+        let len = learn_daily_campaign_ids_lenient(&[expired]);
+        assert_eq!(len.len(), 1);
+        // tier C: name-based
+        let odd = json!({"campaignId": "c9", "actionType": "CLAIM_BENEFIT", "name": "每日签到奖励"});
+        let len_c = learn_daily_campaign_ids_lenient(&[odd]);
+        assert_eq!(len_c.len(), 1);
+        assert_eq!(len_c[0].0, "c9");
+    }
+
+    /// 409 CAMPAIGN_NOT_ACTIVE pruning: stale ids removed from learned + table.
+    #[test]
+    fn stale_id_pruning() {
+        let mut learned = vec![("old-id".to_string(), "旧活动".to_string())];
+        let mut table = vec![
+            ("old-id".to_string(), "旧活动".to_string()),
+            ("fresh-id".to_string(), "新活动".to_string()),
+        ];
+        learned.retain(|(e, _)| e != "old-id");
+        table.retain(|(e, _)| e != "old-id");
+        assert!(!learned.iter().any(|(e, _)| e == "old-id"));
+        assert_eq!(table.len(), 1);
+        assert_eq!(table[0].0, "fresh-id");
+    }
 
     #[test]
     fn device_profile_shapes_and_stability() {
