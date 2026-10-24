@@ -41,12 +41,16 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.FloatingActionButton
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
 import top.yukonga.miuix.kmp.basic.SmallTitle
+import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.overlay.OverlayBottomSheet
+import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import androidx.compose.ui.graphics.SolidColor
@@ -81,7 +85,7 @@ fun TraeClockApp() {
     val controller = remember { top.yukonga.miuix.kmp.theme.ThemeController(top.yukonga.miuix.kmp.theme.ColorSchemeMode.System) }
     top.yukonga.miuix.kmp.theme.MiuixTheme(controller = controller) {
         var tab by remember { mutableIntStateOf(0) }
-        val tabs = listOf("主页", "账号", "登录", "日志", "设置")
+        val tabs = listOf("主页", "账号", "日志", "设置")
         // liquid-glass bottom bar: the page content is captured into a backdrop
         // layer and refracted through the bar (Kyant0/AndroidLiquidGlass)
         // (theme colors are @Composable reads — hoist them OUT of the DrawScope
@@ -92,18 +96,25 @@ fun TraeClockApp() {
             drawContent()
         }
         Box(Modifier.fillMaxSize().background(backdropBg)) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .layerBackdrop(backdrop)
-                    .statusBarsPadding()
-            ) {
-                when (tab) {
-                    0 -> HomePage()
-                    1 -> AccountsPage()
-                    2 -> LoginPage()
-                    3 -> LogPage()
-                    4 -> SettingsPage()
+            // Scaffold (transparent, no chrome) hosts the MiuixPopupHost that
+            // OverlayBottomSheet / OverlayDropdownPreference render into.
+            top.yukonga.miuix.kmp.basic.Scaffold(
+                modifier = Modifier.fillMaxSize(),
+                containerColor = androidx.compose.ui.graphics.Color.Transparent,
+                contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
+            ) { _ ->
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .layerBackdrop(backdrop)
+                        .statusBarsPadding()
+                ) {
+                    when (tab) {
+                        0 -> HomePage()
+                        1 -> AccountsPage()
+                        2 -> LogPage()
+                        3 -> SettingsPage()
+                    }
                 }
             }
             GlassBottomBar(
@@ -212,6 +223,21 @@ private object MiuixTabIcons {
             lineTo(5f, 11f); lineTo(11f, 11f); close()
         }
     }
+    private val plus by lazy {
+        glyph("TabAdd") {
+            moveTo(11f, 4f); lineTo(13f, 4f); lineTo(13f, 11f); lineTo(20f, 11f); lineTo(20f, 13f)
+            lineTo(13f, 13f); lineTo(13f, 20f); lineTo(11f, 20f); lineTo(11f, 13f); lineTo(4f, 13f)
+            lineTo(4f, 11f); lineTo(11f, 11f); close()
+        }
+    }
+
+    val forIndex: (Int) -> androidx.compose.ui.graphics.vector.ImageVector = { index ->
+        when (index) {
+            0 -> home; 1 -> people; 2 -> doc; else -> settings
+        }
+    }
+    val add: androidx.compose.ui.graphics.vector.ImageVector get() = plus
+}
     private val doc by lazy {
         glyph("TabDoc") {
             moveTo(6f, 2f); lineTo(15f, 2f); lineTo(20f, 7f); lineTo(20f, 22f); lineTo(6f, 22f); close()
@@ -238,7 +264,7 @@ private object MiuixTabIcons {
 
     val forIndex: (Int) -> androidx.compose.ui.graphics.vector.ImageVector = { index ->
         when (index) {
-            0 -> home; 1 -> people; 2 -> person; 3 -> doc; else -> settings
+            0 -> home; 1 -> people; 2 -> doc; else -> settings
         }
     }
 }
@@ -588,6 +614,15 @@ fun AccountsPage() {
         val scope = rememberCoroutineScope()
         var accounts by remember { mutableStateOf(DataCache.accounts) }
         var filter by remember { mutableStateOf<String?>(null) }
+        // login flow state (moved from the removed 登录 tab)
+        var activeFlow by remember { mutableStateOf<String?>(null) }
+        var result by remember { mutableStateOf("") }
+        var clearCookies by remember { mutableStateOf(false) }
+        var traeUrl by remember { mutableStateOf<String?>(null) }
+        var wbState by remember { mutableStateOf<String?>(null) }
+        var wbUrl by remember { mutableStateOf<String?>(null) }
+        var qoderUrl by remember { mutableStateOf<String?>(null) }
+        var showAddSheet by remember { mutableStateOf(false) }
 
         fun refresh() = scope.launch {
             withContext(Dispatchers.IO) {
@@ -596,120 +631,49 @@ fun AccountsPage() {
         }
         LaunchedEffect(filter) { refresh() }
 
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 96.dp)) {
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 4.dp)) {
-                    CharChip("全部", filter == null) { filter = null }
-                    Apps.ALL.forEach { app -> CharChip(Apps.displayName(app), filter == app) { filter = app } }
-                }
-            }
-            items(accounts, key = { it.app + it.userId }) { a ->
-                Card(modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text(a.name.ifEmpty { a.userId }, style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Bold)
-                            Text(Apps.displayName(a.app), style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-                        }
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text(
-                                listOfNotNull(
-                                    if (a.enabled) "已启用" else "已停用",
-                                    when (a.jwtStatus) {
-                                        "ok" -> "JWT 正常"
-                                        "warn" -> "JWT ${"%.0f".format(a.jwtExpHours ?: 0.0)}h"
-                                        "expired" -> "JWT 已过期"
-                                        else -> null
-                                    },
-                                    if (a.needsRelogin) "需重登" else null,
-                                ).joinToString(" · "),
-                                style = MiuixTheme.textStyles.footnote1,
-                                color = when {
-                                    a.needsRelogin || a.jwtStatus == "expired" -> MiuixTheme.colorScheme.error
-                                    else -> MiuixTheme.colorScheme.onSurfaceVariantSummary
-                                },
-                            )
-                        }
-                        a.deviceId?.let {
-                            Text("指纹 $it", style = MiuixTheme.textStyles.footnote2, fontFamily = FontFamily.Monospace, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            TextButton(
-                                text = if (a.enabled) "停用" else "启用",
-                                onClick = {
-                                    scope.launch {
-                                        withContext(Dispatchers.IO) { RootCtl.setEnabled(a.app, a.userId, !a.enabled) }
-                                        refresh()
-                                    }
-                                },
-                            )
-                            if (a.app == Apps.TRAE) {
-                                TextButton(
-                                    text = "刷新 JWT",
-                                    onClick = {
-                                        scope.launch {
-                                            withContext(Dispatchers.IO) { RootCtl.traeRefresh(a.userId) }
-                                            refresh()
-                                        }
-                                    },
-                                )
+        fun closeFlow() {
+            activeFlow = null; traeUrl = null; wbState = null; wbUrl = null; qoderUrl = null
+        }
+
+        // start the chosen flow after the account-type picker
+        fun startFlow(app: String) {
+            scope.launch {
+                if (clearCookies) {
+                    // CookieManager must be touched on the main thread
+                    withContext(Dispatchers.Main) {
+                        runCatching {
+                            android.webkit.CookieManager.getInstance().apply {
+                                removeAllCookies(null); removeSessionCookies(null); flush()
                             }
-                            TextButton(
-                                text = "删除",
-                                onClick = {
-                                    scope.launch {
-                                        withContext(Dispatchers.IO) { RootCtl.remove(a.app, a.userId) }
-                                        refresh()
-                                    }
-                                },
-                            )
                         }
                     }
                 }
-            }
-            if (accounts.isEmpty()) item {
-                Text("暂无账号，请到「登录」页添加", style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                when (app) {
+                    Apps.TRAE -> {
+                        val j = withContext(Dispatchers.IO) { RootCtl.traeLoginUrl() }
+                        traeUrl = j?.get("url")?.asString
+                        if (traeUrl == null) result = "❌ 生成授权链接失败" else activeFlow = "trae"
+                    }
+                    Apps.WB -> {
+                        val j = withContext(Dispatchers.IO) { RootCtl.wbStart() }
+                        wbState = j?.get("state")?.asString
+                        wbUrl = j?.get("auth_url")?.asString
+                        if (wbUrl == null) result = "❌ 获取登录链接失败" else activeFlow = "wb"
+                    }
+                    Apps.QODER -> {
+                        val j = withContext(Dispatchers.IO) { RootCtl.call("qoder-start").json() }
+                        qoderUrl = j?.get("auth_url")?.asString
+                        if (qoderUrl == null) result = "❌ 发起设备流失败" else activeFlow = "qoder"
+                    }
+                }
             }
         }
-    }
-}
 
-@Composable
-private fun CharChip(label: String, selected: Boolean, onClick: () -> Unit) {
-    TextButton(
-        text = label,
-        onClick = onClick,
-        colors = if (selected) ButtonDefaults.textButtonColorsPrimary() else ButtonDefaults.textButtonColors(),
-    )
-}
-
-// ── 登录（WebView 内嵌向导）──────────────────────────────────────────────────
-
-/** Login flows rendered inside an in-app WebView (no external browser hop,
- *  no manual URL copying). Each flow gets its auth URL from the module CLI,
- *  intercepts the OAuth redirect (Trae) or polls to completion (WB/Qoder),
- *  then shows the result inline. */
-@Composable
-fun LoginPage() {
-    StatusGate { _ ->
-        val scope = rememberCoroutineScope()
-        var flow by remember { mutableStateOf<String?>(null) }
-        var result by remember { mutableStateOf("") }
-        var traeUrl by remember { mutableStateOf<String?>(null) }
-        var wbState by remember { mutableStateOf<String?>(null) }
-        var wbUrl by remember { mutableStateOf<String?>(null) }
-        var qoderUrl by remember { mutableStateOf<String?>(null) }
-
-        fun closeFlow() {
-            flow = null; traeUrl = null; wbState = null; wbUrl = null; qoderUrl = null
-        }
-
-        // Full-screen overlay: when a flow is active, render ONLY the webview.
-        // (Previously both were composed in the same Box and the list painted
-        // over the webview — the login page appeared "behind" the cards.)
-        if (flow != null) {
+        // Full-screen login webview (same behavior as the removed tab)
+        if (activeFlow != null) {
             EmbeddedLoginWebview(
                 url = traeUrl ?: wbUrl ?: qoderUrl.orEmpty(),
-                title = when (flow) {
+                title = when (activeFlow) {
                     "trae" -> "Trae 登录"
                     "wb" -> "WorkBuddy 登录"
                     else -> "Qoder 授权"
@@ -725,6 +689,7 @@ fun LoginPage() {
                             else -> "❌ ${j?.get("error")?.asString ?: r.stdout.take(160)}"
                         }
                         closeFlow()
+                        refresh()
                     }
                 },
                 onWbFinish = {
@@ -744,6 +709,7 @@ fun LoginPage() {
                                     else -> "❌ ${r.stdout.take(160)}"
                                 }
                                 closeFlow()
+                                refresh()
                                 return@launch
                             }
                         }
@@ -764,82 +730,157 @@ fun LoginPage() {
                             else -> "❌ ${r.stdout.take(160)}"
                         }
                         closeFlow()
+                        refresh()
                     }
                 },
             )
             return@StatusGate
         }
 
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 96.dp)) {
-            item {
-                SmallTitle(text = "添加账号（内嵌登录）")
-                if (result.isNotEmpty()) {
-                    Card(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
-                        Column(Modifier.padding(16.dp)) {
-                            Text(result, style = MiuixTheme.textStyles.body2)
-                            Spacer(Modifier.height(6.dp))
-                            TextButton(text = "清除提示", onClick = { result = "" })
+        Box(Modifier.fillMaxSize()) {
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 160.dp)) {
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 4.dp)) {
+                        CharChip("全部", filter == null) { filter = null }
+                        Apps.ALL.forEach { app -> CharChip(Apps.displayName(app), filter == app) { filter = app } }
+                    }
+                    if (result.isNotEmpty()) {
+                        Card(modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
+                            Column(Modifier.padding(16.dp)) {
+                                Text(result, style = MiuixTheme.textStyles.body2)
+                                Spacer(Modifier.height(6.dp))
+                                TextButton(text = "清除提示", onClick = { result = "" })
+                            }
                         }
                     }
                 }
-
-                Card(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Trae · OAuth 授权", style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Bold)
-                        Text("在 App 内完成登录，自动接收凭证，全程无需切换应用。", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-                        TextButton(
-                            text = "打开内嵌登录页",
-                            onClick = {
-                                scope.launch {
-                                    val j = withContext(Dispatchers.IO) { RootCtl.traeLoginUrl() }
-                                    traeUrl = j?.get("url")?.asString
-                                    if (traeUrl == null) result = "❌ 生成授权链接失败" else flow = "trae"
+                items(accounts, key = { it.app + it.userId }) { a ->
+                    Card(modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
+                        Column(Modifier.padding(start = 16.dp, bottom = 12.dp, top = 16.dp, end = 16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Text(a.name.ifEmpty { a.userId }, style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                                // enable/disable switch at the card's top-right corner
+                                Switch(
+                                    checked = a.enabled,
+                                    onCheckedChange = { checked ->
+                                        scope.launch {
+                                            withContext(Dispatchers.IO) { RootCtl.setEnabled(a.app, a.userId, checked) }
+                                            refresh()
+                                        }
+                                    },
+                                )
+                            }
+                            Text(
+                                Apps.displayName(a.app) + " · " + listOfNotNull(
+                                    if (a.enabled) "已启用" else "已停用",
+                                    when (a.jwtStatus) {
+                                        "ok" -> "JWT 正常"
+                                        "warn" -> "JWT ${"%.0f".format(a.jwtExpHours ?: 0.0)}h"
+                                        "expired" -> "JWT 已过期"
+                                        else -> null
+                                    },
+                                    if (a.needsRelogin) "需重登" else null,
+                                ).joinToString(" · "),
+                                style = MiuixTheme.textStyles.footnote1,
+                                color = when {
+                                    a.needsRelogin || a.jwtStatus == "expired" -> MiuixTheme.colorScheme.error
+                                    else -> MiuixTheme.colorScheme.onSurfaceVariantSummary
+                                },
+                            )
+                            a.deviceId?.let {
+                                Text("指纹 $it", style = MiuixTheme.textStyles.footnote2, fontFamily = FontFamily.Monospace, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (a.app == Apps.TRAE) {
+                                    TextButton(
+                                        text = "刷新 JWT",
+                                        onClick = {
+                                            scope.launch {
+                                                withContext(Dispatchers.IO) { RootCtl.traeRefresh(a.userId) }
+                                                refresh()
+                                            }
+                                        },
+                                    )
                                 }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
+                                TextButton(
+                                    text = "删除",
+                                    onClick = {
+                                        scope.launch {
+                                            withContext(Dispatchers.IO) { RootCtl.remove(a.app, a.userId) }
+                                            refresh()
+                                        }
+                                    },
+                                )
+                            }
+                        }
                     }
                 }
-
-                Card(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("WorkBuddy · 扫码登录", style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Bold)
-                        Text("内嵌打开登录页，完成后点「我已登录」自动入池。", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-                        TextButton(
-                            text = "打开内嵌登录页",
-                            onClick = {
-                                scope.launch {
-                                    val j = withContext(Dispatchers.IO) { RootCtl.wbStart() }
-                                    wbState = j?.get("state")?.asString
-                                    wbUrl = j?.get("auth_url")?.asString
-                                    if (wbUrl == null) result = "❌ 获取登录链接失败" else flow = "wb"
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
+                if (accounts.isEmpty()) item {
+                    Text("暂无账号，点右下角 + 添加", style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
                 }
+            }
 
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Qoder · 设备流授权", style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Bold)
-                        Text("内嵌打开授权页，后台自动轮询（最长 240 秒）。若提示「参数无效」，重试一次自动切兼容模式。", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-                        TextButton(
-                            text = "打开内嵌授权页",
-                            onClick = {
-                                scope.launch {
-                                    val j = withContext(Dispatchers.IO) { RootCtl.call("qoder-start").json() }
-                                    qoderUrl = j?.get("auth_url")?.asString
-                                    if (qoderUrl == null) result = "❌ 发起设备流失败" else flow = "qoder"
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
+            // add-account FAB, bottom-left above the glass bar
+            FloatingActionButton(
+                onClick = { showAddSheet = true },
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 20.dp, bottom = 24.dp),
+            ) {
+                Icon(
+                    imageVector = MiuixTabIcons.add,
+                    contentDescription = "添加账号",
+                    tint = MiuixTheme.colorScheme.onPrimary,
+                )
+            }
+
+            // account-type picker sheet
+            OverlayBottomSheet(
+                show = showAddSheet,
+                title = "添加账号",
+                onDismissRequest = { showAddSheet = false },
+            ) {
+                Column(Modifier.padding(bottom = 16.dp)) {
+                    SwitchPreference(
+                        title = "清除原有 Cookie",
+                        summary = "登录前清空 WebView 已保存的 Cookie（避免旧登录态串号，推荐多账号时开启）",
+                        checked = clearCookies,
+                        onCheckedChange = { clearCookies = it },
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    listOf(
+                        Triple(Apps.TRAE, "Trae · OAuth 授权", "在 App 内完成登录，自动接收凭证"),
+                        Triple(Apps.WB, "WorkBuddy · 扫码登录", "内嵌打开登录页，完成后点「我已登录」"),
+                        Triple(Apps.QODER, "Qoder · 设备流授权", "内嵌打开授权页，后台自动轮询（最长 240 秒）"),
+                    ).forEach { (app, title, summary) ->
+                        Card(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(title, style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Bold)
+                                Text(summary, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                                TextButton(
+                                    text = "开始登录",
+                                    onClick = {
+                                        showAddSheet = false
+                                        startFlow(app)
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+                        }
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun CharChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    TextButton(
+        text = label,
+        onClick = onClick,
+        colors = if (selected) ButtonDefaults.textButtonColorsPrimary() else ButtonDefaults.textButtonColors(),
+    )
 }
 
 /** Full-screen embedded webview with a Miuix-style top bar and a finish button
@@ -1056,7 +1097,7 @@ fun SettingsPage() {
         var status by remember { mutableStateOf<StatusView?>(null) }
         var saved by remember { mutableStateOf("") }
         var jitter by remember(status) { mutableStateOf(status?.jitter ?: true) }
-        var flavor by remember(status) { mutableStateOf(status?.platformFlavor ?: "android") }
+        var flavor by remember(status) { mutableStateOf(status?.platformFlavor ?: "windows") }
         var windowStart by remember(status) { mutableStateOf(((status?.windowStart ?: 480) / 60).toString() + ":" + "%02d".format((status?.windowStart ?: 480) % 60)) }
         var windowEnd by remember(status) { mutableStateOf(((status?.windowEnd ?: 600) / 60).toString() + ":" + "%02d".format((status?.windowEnd ?: 600) % 60)) }
         var gap by remember(status) { mutableStateOf((status?.accountGap ?: 3).toString()) }
@@ -1086,11 +1127,15 @@ fun SettingsPage() {
                 SmallTitle(text = "平台指纹")
                 Card(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
                     Column {
-                        BasicRow("指纹模式", if (flavor == "windows") "windows（默认，与桌面版一致）" else "android（ mobile 逃生通道）")
-                        Row(Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            CharChip("android", flavor == "android") { flavor = "android" }
-                            CharChip("windows", flavor == "windows") { flavor = "windows" }
-                        }
+                        val flavorItems = listOf("windows", "android")
+                        val flavorIdx = flavorItems.indexOf(flavor).coerceAtLeast(0)
+                        OverlayDropdownPreference(
+                            items = flavorItems,
+                            selectedIndex = flavorIdx,
+                            title = "指纹模式",
+                            summary = "windows = 与桌面版请求头完全一致（默认，新 JWT 校验设备指纹时最稳）；android = 实验逃生通道",
+                            onSelectedIndexChange = { flavor = flavorItems[it] },
+                        )
                     }
                 }
                 TextButton(
