@@ -28,6 +28,9 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
+import cn.traeclock.manager.ui.liquid.LiquidGlassNavigationBar
+import cn.traeclock.manager.ui.liquid.LiquidGlassNavigationBarItem
+import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Add
 import top.yukonga.miuix.kmp.icon.extended.Contacts
@@ -216,7 +219,7 @@ private fun LiquidGlassBottomBar(
         .navigationBars.asPaddingValues().calculateBottomPadding()
     val bottomPadding = if (navigationBarBottom != 0.dp) 8.dp + navigationBarBottom else 28.dp
     Box(modifier = modifier.fillMaxWidth()) {
-        cn.traeclock.manager.ui.liquid.LiquidGlassNavigationBar(
+        LiquidGlassNavigationBar(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .pointerInput(Unit) { androidx.compose.foundation.gestures.detectTapGestures { } }
@@ -227,7 +230,7 @@ private fun LiquidGlassBottomBar(
             tabsCount = tabs.size,
         ) { activateTab ->
             tabs.forEachIndexed { index, label ->
-                cn.traeclock.manager.ui.liquid.LiquidGlassNavigationBarItem(
+                LiquidGlassNavigationBarItem(
                     selected = selected == index,
                     onClick = { activateTab(index) },
                     modifier = Modifier.defaultMinSize(minWidth = 76.dp),
