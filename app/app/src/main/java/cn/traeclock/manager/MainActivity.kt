@@ -230,14 +230,6 @@ private object MiuixTabIcons {
             lineTo(4f, 11f); lineTo(11f, 11f); close()
         }
     }
-
-    val forIndex: (Int) -> androidx.compose.ui.graphics.vector.ImageVector = { index ->
-        when (index) {
-            0 -> home; 1 -> people; 2 -> doc; else -> settings
-        }
-    }
-    val add: androidx.compose.ui.graphics.vector.ImageVector get() = plus
-}
     private val doc by lazy {
         glyph("TabDoc") {
             moveTo(6f, 2f); lineTo(15f, 2f); lineTo(20f, 7f); lineTo(20f, 22f); lineTo(6f, 22f); close()
@@ -267,6 +259,7 @@ private object MiuixTabIcons {
             0 -> home; 1 -> people; 2 -> doc; else -> settings
         }
     }
+    val add: androidx.compose.ui.graphics.vector.ImageVector get() = plus
 }
 
 // ── shared page scaffold (status gate) ───────────────────────────────────────
