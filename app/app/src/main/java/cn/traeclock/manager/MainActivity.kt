@@ -91,6 +91,26 @@ fun pagePadding(base: PaddingValues): PaddingValues {
     )
 }
 
+
+/** FAB icon with a fake-bold pass: the miuix extended glyphs are hairline
+ *  fills that look thin on a primary-colored FAB; two sub-pixel offset
+ *  copies visually thicken the strokes. */
+@Composable
+private fun FabIcon(imageVector: androidx.compose.ui.graphics.vector.ImageVector, contentDescription: String) {
+    Box {
+        Icon(
+            imageVector = imageVector,
+            contentDescription = null,
+            tint = MiuixTheme.colorScheme.onPrimary,
+            modifier = Modifier.offset(x = 0.5.dp, y = 0.5.dp),
+        )
+        Icon(
+            imageVector = imageVector,
+            contentDescription = contentDescription,
+            tint = MiuixTheme.colorScheme.onPrimary,
+        )
+    }
+}
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -830,11 +850,7 @@ fun AccountsPage() {
                     .align(Alignment.BottomEnd)
                     .padding(end = 20.dp, bottom = 108.dp),
             ) {
-                Icon(
-                    imageVector = MiuixIcons.Add,
-                    contentDescription = "添加账号",
-                    tint = MiuixTheme.colorScheme.onPrimary,
-                )
+                FabIcon(MiuixIcons.Add, "添加账号")
             }
 
             // account-type picker sheet (window-level: OverlayBottomSheet crashed
@@ -1103,11 +1119,7 @@ fun LogPage() {
                     .align(Alignment.BottomEnd)
                     .padding(end = 20.dp, bottom = 108.dp),
             ) {
-                Icon(
-                    imageVector = MiuixIcons.Refresh,
-                    contentDescription = "刷新日志",
-                    tint = MiuixTheme.colorScheme.onPrimary,
-                )
+                FabIcon(MiuixIcons.Refresh, "刷新日志")
             }
         }
     }
