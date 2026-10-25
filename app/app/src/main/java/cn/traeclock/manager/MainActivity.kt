@@ -1070,15 +1070,16 @@ fun LogPage() {
         LaunchedEffect(Unit) {
             withContext(Dispatchers.IO) { lines = RootCtl.log(300) }
         }
-        Column(Modifier.fillMaxSize().padding(start = 12.dp, end = 12.dp).padding(top = LocalPageInsets.current.calculateTopPadding() + 4.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("事件日志", style = MiuixTheme.textStyles.title3)
-                TextButton(
-                    text = "刷新",
-                    onClick = { scope.launch { withContext(Dispatchers.IO) { lines = RootCtl.log(300) } } },
-                )
-            }
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = LocalPageInsets.current.calculateBottomPadding() + 96.dp)) {
+        Box(Modifier.fillMaxSize()) {
+            LazyColumn(
+                Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    start = 12.dp,
+                    end = 12.dp,
+                    top = LocalPageInsets.current.calculateTopPadding() + 8.dp,
+                    bottom = LocalPageInsets.current.calculateBottomPadding() + 96.dp,
+                ),
+            ) {
                 items(lines.reversed()) { raw ->
                     // render "[ts] line": extract the ts field from the NDJSON event
                     // color pinned to theme onSurface (default Text uses onPrimary,
@@ -1093,6 +1094,20 @@ fun LogPage() {
                     )
                 }
                 if (lines.isEmpty()) item { Text("暂无日志（等待守护进程执行签到）", style = MiuixTheme.textStyles.body2) }
+            }
+
+            // refresh FAB — same style/position as the accounts add button
+            FloatingActionButton(
+                onClick = { scope.launch { withContext(Dispatchers.IO) { lines = RootCtl.log(300) } } },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 20.dp, bottom = 108.dp),
+            ) {
+                Icon(
+                    imageVector = MiuixIcons.Refresh,
+                    contentDescription = "刷新日志",
+                    tint = MiuixTheme.colorScheme.onPrimary,
+                )
             }
         }
     }
