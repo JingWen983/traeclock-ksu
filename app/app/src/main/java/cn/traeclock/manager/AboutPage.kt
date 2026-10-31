@@ -61,8 +61,8 @@ private const val GPL_URL = "https://www.gnu.org/licenses/gpl-3.0.txt"
  * scrolls under it, followed by link cards and a credits dialog.
  *
  * Differences from upstream are deliberate and structural: no `textureBlur`
- * card backdrop (this app has no per-card screenshot layer — the玻璃 pill only
- * samples the page), and no "based on template" line.
+ * card backdrop (this app has no per-card screenshot layer — the glass pill
+ * samples the page itself), and no "based on template" line.
  */
 @Composable
 fun AboutPage() {
