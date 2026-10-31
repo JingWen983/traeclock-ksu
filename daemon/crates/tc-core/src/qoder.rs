@@ -157,34 +157,52 @@ fn hostname_of(creds: &QoderCreds) -> String {
 
 // ── refresh ──────────────────────────────────────────────────────────────────
 
+/// 无签名刷新端点按**刷新令牌前缀**分派（upstream `refresh_endpoint_for`，2026-10-03
+/// 情报互证）：`jrt-`（作业令牌 / PAT 通道产物）→ `/api/v1/jobToken/refresh`；其余
+/// （设备流刷新令牌）→ `/api/v1/deviceToken/refresh`。两端点同在 openapi 主机、无 COSY
+/// 签名、body 均为 snake_case。按前缀而非「有无 PAT」分派：两者可并存于同一账号，
+/// 按存在性分派会让 PAT 劫持设备刷新，导致 COSY 身份与记录 machineId 错位。
+fn refresh_endpoint_for(refresh_token: &str) -> &'static str {
+    if refresh_token.starts_with("jrt-") {
+        "/api/v1/jobToken/refresh"
+    } else {
+        "/api/v1/deviceToken/refresh"
+    }
+}
+
+/// 非 200 状态 → 是否「凭据永久失效」（upstream `classify_refresh_status`）：
+/// 429/408 是限流/超时的暂态（重试可恢复，误标会让可自愈的账号被永久停用），
+/// 其余 4xx 才是 refresh_token 被服务端拒绝（吊销/过期，一次性轮换后旧 RT 不可恢复）。
+fn refresh_status_is_fatal(status: i32) -> bool {
+    status != 429 && status != 408 && (400..500).contains(&status)
+}
+
 /// One refresh attempt → (new_creds, rejected_by_server).
-/// Only a server rejection (non-zero code / auth 4xx) marks the token dead;
-/// network failures merely count (matches the source's failure taxonomy).
+/// Only a server rejection (4xx except 429/408) marks the token dead; network
+/// failures merely count (matches the source's failure taxonomy).
 pub fn refresh_token_once_ex(
     agent: &ureq::Agent,
     cfg: &AppConfig,
     creds: &QoderCreds,
 ) -> (Option<QoderCreds>, bool) {
     if creds.refresh_token.is_empty() {
-        return (None, false);
+        return (None, true); // 无 RT：永不自愈，按永久失效处理（对齐 upstream AuthDead）
     }
     let mut h = build_auth_headers(cfg, creds);
-    h.push(("Authorization".to_string(), "Bearer".to_string())); // refreshed pre-auth endpoint drops the stale bearer
+    // 刷新端点不带 Authorization（鉴权完全靠 body 中的 refresh_token）+ Cosy 头
     h.retain(|(k, _)| k != "Authorization");
     let (status, body, _raw) = http::post_json(
         agent,
-        &format!("{OPEN_API_BASE}/device/token/refresh"),
+        &format!("{OPEN_API_BASE}{}", refresh_endpoint_for(&creds.refresh_token)),
         &h,
-        &json!({ "refreshToken": creds.refresh_token }),
+        // snake_case body（设备/job 两个刷新端点的实测形态）
+        &json!({ "refresh_token": creds.refresh_token }),
     );
     if status == 0 {
         return (None, false);
     }
-    if (400..500).contains(&status) {
-        return (None, true);
-    }
     if status != 200 {
-        return (None, false);
+        return (None, refresh_status_is_fatal(status));
     }
     let Some(b) = body else { return (None, false) };
     let mut out = creds.clone();
@@ -194,7 +212,7 @@ pub fn refresh_token_once_ex(
     (Some(out), false)
 }
 
-/// 刷新响应解析（upstream issue #143，2026-10-25 实测 `/device/token/refresh` 的 200
+/// 刷新响应解析（upstream issue #143，2026-10-25 实测 `/api/v1/deviceToken/refresh` 的 200
 /// 响应形如 `{device_token, expires_at(RFC3339), refresh_token}`）：
 /// - access token 候选：`accessToken` / `access_token` / `token` / **`device_token`** /
 ///   `deviceToken`（旧实现只认 accessToken → 明明 200 成功却被判「响应结构异常」，
@@ -1113,6 +1131,26 @@ mod tests {
         assert!(!learned.iter().any(|(e, _)| e == "old-id"));
         assert_eq!(table.len(), 1);
         assert_eq!(table[0].0, "fresh-id");
+    }
+
+    /// 刷新端点按刷新令牌前缀分派（jrt- 作业令牌 → jobToken，其余 → deviceToken）。
+    #[test]
+    fn refresh_endpoint_dispatch_by_prefix() {
+        assert_eq!(refresh_endpoint_for("jrt-abc"), "/api/v1/jobToken/refresh");
+        assert_eq!(refresh_endpoint_for("drt-abc"), "/api/v1/deviceToken/refresh");
+        assert_eq!(refresh_endpoint_for(""), "/api/v1/deviceToken/refresh");
+    }
+
+    /// 429/408 为暂态（不得误标需重登），其余 4xx 为凭据永久失效。
+    #[test]
+    fn refresh_status_classification() {
+        assert!(refresh_status_is_fatal(401));
+        assert!(refresh_status_is_fatal(403));
+        assert!(refresh_status_is_fatal(400));
+        assert!(!refresh_status_is_fatal(429));
+        assert!(!refresh_status_is_fatal(408));
+        assert!(!refresh_status_is_fatal(500));
+        assert!(!refresh_status_is_fatal(0));
     }
 
     /// issue #143：`/device/token/refresh` 的 200 响应把令牌放在 `device_token`，
