@@ -140,29 +140,34 @@ pub enum RefreshFail {
 
 /// POST plugin refresh (X-Refresh-Token only allowed on this endpoint).
 /// New expires fields backfilled from expiresIn/refreshExpiresIn seconds.
-pub fn refresh_token_once_ex(agent: &ureq::Agent, creds: &Creds) -> (Option<Creds>, RefreshFail) {
+/// Third item = upstream `error`/`error_description` detail (issue #118): lets the
+/// caller tell "session expired" apart from "account banned" instead of guessing.
+pub fn refresh_token_once_ex(
+    agent: &ureq::Agent,
+    creds: &Creds,
+) -> (Option<Creds>, RefreshFail, Option<String>) {
     if creds.refresh_token.is_empty() {
-        return (None, RefreshFail::NoRefreshToken);
+        return (None, RefreshFail::NoRefreshToken, None);
     }
     let mut h = build_auth_headers(&crate::config::AppConfig::default(), creds, false);
     h.push(("X-Refresh-Token".to_string(), creds.refresh_token.clone()));
     h.push(("X-Auth-Refresh-Source".to_string(), "workbuddy".to_string()));
     let (status, body, _raw) = http::post_json(agent, REFRESH_URL, &h, &json!({}));
     if status == 0 {
-        return (None, RefreshFail::Network);
+        return (None, RefreshFail::Network, None);
     }
     if (400..500).contains(&status) {
-        return (None, RefreshFail::Auth);
+        return (None, RefreshFail::Auth, refresh_detail(body.as_ref()));
     }
     if status != 200 {
-        return (None, RefreshFail::Network); // 5xx etc.: do not mark relogin
+        return (None, RefreshFail::Network, None); // 5xx etc.: do not mark relogin
     }
     let Some(body) = body else {
-        return (None, RefreshFail::BadResponse);
+        return (None, RefreshFail::BadResponse, None);
     };
     let acc = dig(&body, &["accessToken"]).and_then(|v| v.as_str()).unwrap_or("").to_string();
     if acc.is_empty() {
-        return (None, RefreshFail::BadResponse);
+        return (None, RefreshFail::BadResponse, refresh_detail(Some(&body)));
     }
     let now_ms = chrono::Utc::now().timestamp_millis();
     let mut out = creds.clone();
@@ -175,7 +180,22 @@ pub fn refresh_token_once_ex(agent: &ureq::Agent, creds: &Creds) -> (Option<Cred
         dig(&body, &["expiresIn"]).and_then(|v| v.as_i64()).map(|e| now_ms + e * 1000);
     out.refresh_expires_at_ms =
         dig(&body, &["refreshExpiresIn"]).and_then(|v| v.as_i64()).map(|e| now_ms + e * 1000);
-    (Some(out), RefreshFail::NoRefreshToken)
+    (Some(out), RefreshFail::NoRefreshToken, None)
+}
+
+/// 上游失败详情透传（issue #118）：取 `error` / `error_description` / `message`，
+/// 用于把「会话失效」与「账号封禁」区分开（仅诊断用途，不改变分类）。
+fn refresh_detail(body: Option<&Value>) -> Option<String> {
+    let b = body?;
+    for key in ["error_description", "error", "message"] {
+        if let Some(s) = dig(b, &[key]).and_then(Value::as_str) {
+            let s = s.trim();
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Lazy renewal gate (port of `lazy_renew_skippable`): access_token remaining
@@ -479,7 +499,7 @@ pub fn run_round(store: &Store, cfg: &AppConfig, sink: &mut dyn Sink) -> Value {
         if kind == "auth" {
             // 401: refresh once, retry the failure branch only (no second refresh)
             match refresh_token_once_ex(&agent, &creds) {
-                (Some(new), _) => {
+                (Some(new), _, _) => {
                     persist_creds(store, &mut accounts_file_mut, &aid, &new);
                     creds = new;
                     headers = build_auth_headers(cfg, &creds, false);
@@ -495,13 +515,21 @@ pub fn run_round(store: &Store, cfg: &AppConfig, sink: &mut dyn Sink) -> Value {
                         reward = None;
                     }
                 }
-                (None, RefreshFail::Auth) => {
-                    mark_needs_relogin(store, &mut accounts_file_mut, &aid, "签到 refresh 失败");
+                (None, RefreshFail::Auth, detail) => {
+                    // issue #118：透传上游 error/error_description，区分会话失效与账号封禁
+                    let mut reason = "签到 refresh 失败".to_string();
+                    if let Some(d) = detail.as_deref() {
+                        reason.push_str(&format!("；上游: {d}"));
+                    }
+                    mark_needs_relogin(store, &mut accounts_file_mut, &aid, &reason);
                     kind = "fail".into();
-                    message = "登录态失效且刷新失败，需重新登录".into();
+                    message = match detail.as_deref() {
+                        Some(d) => format!("登录态失效且刷新失败，需重新登录；上游: {d}"),
+                        None => "登录态失效且刷新失败，需重新登录".into(),
+                    };
                     reward = None;
                 }
-                (None, _) => {
+                (None, _, _) => {
                     kind = "fail".into();
                     message = "登录态刷新失败（网络），稍后重试".into();
                     reward = None;

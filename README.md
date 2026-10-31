@@ -18,7 +18,7 @@
 
 | 部分 | 目录 | 说明 |
 |---|---|---|
-| 协议库 | `daemon/crates/tc-core` | 三应用签到/防风控/OAuth 纯 Rust 移植，53 个单元测试 |
+| 协议库 | `daemon/crates/tc-core` | 三应用签到/防风控/OAuth 纯 Rust 移植，77 个单元测试 |
 | 守护进程 | `daemon/crates/tc-ctl` | `traeclockd`（调度守护）+ `traeclockctl`（管理 CLI） |
 | 模块 | `module/` | KernelSU 模块模板（module.prop / service.sh / customize.sh） |
 | 管理器 App | `app/` | Kotlin + Compose，root 通道调用 `traeclockctl` |
@@ -26,10 +26,12 @@
 
 ## 支持
 
-- **Trae**（api.trae.cn）：status 预检 → claim → 错误冷却（PlanLimit/SoftRate/SessionDead/Server/Client 分级）、积分三层兜底、确定性设备指纹（device_id/session_id/market_user_id 按账号派生不漂移）、OAuth 网页登录（PKCE + loopback 回调）+ refresh_token 懒续期（≤48h 才轮换）+ ExchangeToken DeviceProof（ECDSA P-256）
-- **WorkBuddy / CodeBuddy**（codebuddy.cn）：双域名探测、已签容错、401 刷新一次重试、奖励宽容解析 + 余额差值兜底、机器/会话双指纹、扫码 OAuth（copilot.tencent.com state 流）
-- **Qoder**（openapi.qoder.com.cn）：每日双活动（签到+登录奖励）、设备流 OAuth（nonce 回验 + 兼容模式自动回退）、每账号稳定设备档案（**档案永不重新生成**——派生指纹归独立桶会 503）
+- **Trae**（api.trae.cn）：status 预检 → claim → 错误冷却（PlanLimit/SoftRate/SessionDead/Server/Client/AuthRejected/DeviceSigned 分级）、积分三层兜底、确定性设备指纹（device_id/session_id/market_user_id 按账号派生不漂移）、OAuth 网页登录（PKCE + loopback 回调）+ refresh_token 懒续期（≤48h 才轮换）+ ExchangeToken DeviceProof（ECDSA P-256）
+- **WorkBuddy / CodeBuddy**（codebuddy.cn）：双域名探测、已签容错、401 刷新一次重试、上游失败详情（error/error_description）透传、奖励宽容解析 + 余额差值兜底、机器/会话双指纹、扫码 OAuth（copilot.tencent.com state 流）
+- **Qoder**（openapi.qoder.com.cn）：每日双活动（签到+登录奖励）、设备流 OAuth（nonce 回验 + 兼容模式自动回退，**直连 SSO 登录页**绕开授权页 `:443` 回调 400）、401 刷新一次重试 + 需重登标记、刷新响应兼容 `device_token`/`expires_at`（RFC3339）、每账号稳定设备档案（**档案永不重新生成**——派生指纹归独立桶会 503）
 - **豆包**：桌面端 cookie 解密功能**不可移植**，未包含。
+
+> **上游同步**：后端（签到 / 积分 / 凭证 / 风控）逻辑对齐 `smart-open/TraeWorkAssistant` **v3.8.6**。已移植的相关上游修复：#76 设备绑定上限转译、#110 设备当日已签、#114 claim 最小头家族、#118 刷新失败详情透传、#128 服务端拒绝认证（AuthRejected）、#132 campaigns 空表最小头复取、#140 Qoder 直连 SSO 登录页、#141 空表盲发试领兜底、#143 Qoder 续期兼容 `device_token`/`expires_at`。桌面端专有链路（vault/DPAPI、跨进程轮次锁、LLM 网关指纹清洗、通知渠道）不在移植范围。
 
 ## 低功耗设计
 

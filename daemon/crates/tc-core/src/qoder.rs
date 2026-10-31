@@ -187,20 +187,61 @@ pub fn refresh_token_once_ex(
         return (None, false);
     }
     let Some(b) = body else { return (None, false) };
-    let acc = dig(&b, &["accessToken", "access_token"]).and_then(|v| v.as_str()).unwrap_or("");
-    if acc.is_empty() {
+    let mut out = creds.clone();
+    if !apply_refresh_response(&mut out, &b, chrono::Utc::now().timestamp_millis()) {
         return (None, false);
     }
-    let mut out = creds.clone();
-    out.access_token = acc.to_string();
-    let rt = dig(&b, &["refreshToken", "refresh_token"]).and_then(|v| v.as_str()).unwrap_or("");
-    if !rt.is_empty() {
-        out.refresh_token = rt.to_string();
-    }
-    if let Some(ms) = dig(&b, &["expiresIn", "expires_in"]).and_then(|v| v.as_i64()) {
-        out.expires_at_ms = Some(chrono::Utc::now().timestamp_millis() + ms * 1000);
-    }
     (Some(out), false)
+}
+
+/// 刷新响应解析（upstream issue #143，2026-10-25 实测 `/device/token/refresh` 的 200
+/// 响应形如 `{device_token, expires_at(RFC3339), refresh_token}`）：
+/// - access token 候选：`accessToken` / `access_token` / `token` / **`device_token`** /
+///   `deviceToken`（旧实现只认 accessToken → 明明 200 成功却被判「响应结构异常」，
+///   续期恒失败，令牌过期后签到全挂）；
+/// - 到期：`expiresIn` / `expires_in`（毫秒/秒归一）或 `expires_at` / `expiresAt`（RFC3339）；
+/// - refresh token：`refreshToken` / `refresh_token`；
+/// - refresh 到期：`refresh_token_expires_in` / `refreshTokenExpiresIn` 或
+///   `refresh_expires_at` / `refreshExpiresAt`（RFC3339）。
+fn apply_refresh_response(out: &mut QoderCreds, body: &Value, now_ms: i64) -> bool {
+    let acc = s_of(dig(
+        body,
+        &["accessToken", "access_token", "token", "device_token", "deviceToken"],
+    ));
+    if acc.is_empty() {
+        return false;
+    }
+    out.access_token = acc;
+    let rt = s_of(dig(body, &["refreshToken", "refresh_token"]));
+    if !rt.is_empty() {
+        out.refresh_token = rt;
+    }
+    out.expires_at_ms = Some(
+        int_of(dig(body, &["expiresIn", "expires_in"]))
+            .map(|e| now_ms + normalize_expires_in(e))
+            .or_else(|| rfc3339_ms(dig(body, &["expires_at", "expiresAt"])))
+            // 响应缺到期字段时落保守本地基准（now+12h）：否则 expires_at 恒为 None，
+            // 临期判定永无基准、每次调用都重发刷新请求。
+            .unwrap_or(now_ms + 12 * 3_600_000),
+    );
+    if let Some(e) = int_of(dig(body, &["refresh_token_expires_in", "refreshTokenExpiresIn"])) {
+        out.refresh_expires_at_ms = Some(now_ms + normalize_expires_in(e));
+    } else if let Some(ms) = rfc3339_ms(dig(body, &["refresh_expires_at", "refreshExpiresAt"])) {
+        out.refresh_expires_at_ms = Some(ms);
+    }
+    true
+}
+
+/// i64 宽容读（数字或数字字符串）
+fn int_of(v: Option<&Value>) -> Option<i64> {
+    let v = v?;
+    v.as_i64().or_else(|| v.as_str().and_then(|s| s.trim().parse::<i64>().ok()))
+}
+
+/// RFC3339 字符串 → 毫秒时间戳
+fn rfc3339_ms(v: Option<&Value>) -> Option<i64> {
+    let s = v?.as_str()?;
+    chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.timestamp_millis())
 }
 
 /// Lazy freshness gate: access_token remaining > 24h → skip.
@@ -216,6 +257,10 @@ pub fn need_refresh(creds: &QoderCreds, now_ms: i64) -> bool {
 
 /// 授权页基址
 pub const DEVICE_AUTH_BASE: &str = "https://qoder.cn/device/selectAccounts";
+/// SSO 登录页基址（upstream issue #140，2026-10-24 实测）：设备授权页自构 SSO 跳转时
+/// 向 oauth_callback 写入显式 `:443` 端口，被 SSO 端点回调白名单（仅 `https://qoder.cn`）
+/// 拒绝 → 未登录用户经授权页登录必现 400 Bad Request。客户端直连本页并自构正确回调。
+pub const SSO_LOGIN_BASE: &str = "https://qoder.cn/sso/login/aliyun";
 /// 授权页 client_id（官方注册常量，新版 Qoder CN 客户端 authClientIds.prod）。
 /// 随机 client_id 会被授权页判「参数无效」；compat 模式省略该参数（社区实现同款）。
 pub const DEVICE_AUTH_CLIENT_ID: &str = "732aef47-9cf2-46a2-95fe-4cebb5d0d1fa";
@@ -269,13 +314,18 @@ impl DeviceFlow {
         // challenge：BASE64URL_NO_PAD(SHA256(verifier))（PKCE S256）
         let digest = sha2::Sha256::digest(verifier.as_bytes());
         let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest);
-        let mut url = format!(
-            "{DEVICE_AUTH_BASE}?challenge={challenge}&challenge_method=S256&nonce={nonce}&machine_id={machine_id}"
+        // 设备授权页完整 URL（不再直接打开——issue #140：该页自构 SSO 跳转时向
+        // oauth_callback 写入显式 :443 端口，被 SSO 回调白名单拒绝 → 400）。
+        // directLogin=true 单个出现，模拟授权页自身生成的回调形态。
+        let mut device_url = format!(
+            "{DEVICE_AUTH_BASE}?challenge={challenge}&challenge_method=S256&nonce={nonce}&machine_id={machine_id}&directLogin=true"
         );
         if let Some(cid) = &client_id {
-            url.push_str(&format!("&client_id={cid}"));
+            device_url.push_str(&format!("&client_id={cid}"));
         }
-        Self { nonce, verifier, machine_id, client_id, auth_url: url }
+        // 直连 SSO 登录页，oauth_callback 全量百分号编码（跳过授权页损坏的重定向）
+        let auth_url = format!("{SSO_LOGIN_BASE}?oauth_callback={}", percent_encode(&device_url));
+        Self { nonce, verifier, machine_id, client_id, auth_url }
     }
 }
 
@@ -285,13 +335,17 @@ impl Default for DeviceFlow {
     }
 }
 
-/// verifier 进 query 前的最小转义（正常为纯 hex，仅防御性兜底，源码同款）
-fn urlencode(s: &str) -> String {
-    s.replace('%', "%25")
-        .replace(' ', "%20")
-        .replace('&', "%26")
-        .replace('=', "%3D")
-        .replace('~', "%7E")
+/// RFC 3986 百分号编码（仅保留 unreserved 字符）——oauth_callback 需要全量编码
+/// （issue #140：设备授权页 URL 含 `?`/`&`/`=`，不编码会把回调参数截断）。
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 /// 单次轮询：GET /api/v1/deviceToken/poll（无 Authorization 头，与客户端一致）。
@@ -301,7 +355,7 @@ pub fn device_flow_poll_once(agent: &ureq::Agent, flow: &DeviceFlow) -> (i32, Op
         "{}/api/v1/deviceToken/poll?nonce={}&verifier={}&challenge_method=S256",
         OPEN_API_BASE,
         flow.nonce,
-        urlencode(&flow.verifier)
+        percent_encode(&flow.verifier)
     );
     let headers = vec![
         ("User-Agent".to_string(), CLIENT_USER_AGENT.to_string()),
@@ -703,6 +757,128 @@ fn fallback_with_relearn(
     merged.merge(third).aggregate()
 }
 
+/// Claim every CLAIMABLE campaign with the minimal header family (issue #114:
+/// the device-fingerprint family is 503-blocked on claim).
+/// Returns (kind, message, reward); kind == "auth" means the token was rejected
+/// (caller refreshes once and retries, matching upstream's 401 handling).
+fn claim_claimable(
+    agent: &ureq::Agent,
+    token: &str,
+    claimable: &[Value],
+) -> (String, String, Option<f64>) {
+    let mut kind = String::new();
+    let mut messages: Vec<String> = Vec::new();
+    let mut reward: Option<f64> = None;
+    let mut any_fail = false;
+    let mut any_already = false;
+    for c in claimable {
+        let cid = s_of(dig(c, &["campaignId", "campaign_id"]));
+        let cname = s_of(dig(c, &["name", "title", "campaignName", "campaign_name"]));
+        let url = format!("{OPEN_API_BASE}/sash/api/v1/me/campaigns/{cid}/claim");
+        let (status, body, raw) = post_empty(agent, &url, &minimal_auth_headers(token));
+        if status == 401 {
+            kind = "auth".into();
+            break;
+        }
+        let claimed = body
+            .as_ref()
+            .and_then(|b| dig(b, &["status", "data.status"]))
+            .map(|v| s_of(Some(v)).to_ascii_uppercase());
+        let replayed = body
+            .as_ref()
+            .and_then(|b| dig(b, &["replayed", "data.replayed"]))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let bkind = body
+            .as_ref()
+            .and_then(|b| b.get("benefit"))
+            .and_then(|x| x.get("kind"))
+            .and_then(Value::as_str);
+        match classify_blind_step(status, claimed.clone(), replayed, bkind) {
+            BlindStep::Auth => {
+                kind = "auth".into();
+                break;
+            }
+            BlindStep::FreshClaim => {
+                kind = "success".into();
+                messages.push(format!("{}（领取成功）", if cname.is_empty() { &cid } else { &cname }));
+                let amt = body
+                    .as_ref()
+                    .and_then(|b| b.get("benefit"))
+                    .and_then(|x| x.get("amount"))
+                    .and_then(|v| num_or_none(Some(v)));
+                if let Some(a) = amt {
+                    reward = Some(reward.unwrap_or(0.0) + a);
+                }
+            }
+            BlindStep::Replay => {
+                any_already = true;
+                if kind.is_empty() {
+                    kind = "already".into();
+                }
+                messages.push(format!("{}（已领取）", if cname.is_empty() { &cid } else { &cname }));
+            }
+            BlindStep::Failed(code) => {
+                any_fail = true;
+                kind = "fail".into();
+                messages.push(format!(
+                    "{}：{}",
+                    if cname.is_empty() { &cid } else { &cname },
+                    describe_blind_failure(code, claimed.as_deref(), &raw)
+                ));
+            }
+        }
+    }
+    // priority merge: success > fail > already (P2)
+    let final_kind = if kind == "auth" {
+        "auth".to_string()
+    } else if any_fail && !messages.is_empty() && reward.is_some() && !any_already {
+        "fail".into()
+    } else if any_fail && !messages.iter().any(|m| m.contains("领取成功")) {
+        "fail".into()
+    } else if reward.is_some() || messages.iter().any(|m| m.contains("领取成功")) {
+        "success".into()
+    } else if any_already {
+        "already".into()
+    } else if any_fail {
+        "fail".into()
+    } else {
+        "already".into()
+    };
+    (final_kind, messages.join("；"), reward)
+}
+
+/// 刷新后的 Qoder 凭证写回账号文件并落盘（刷新链与 401 重试链共用）。
+fn persist_qoder_creds(
+    store: &Store,
+    file: &mut crate::store::AccountsFile,
+    aid: &str,
+    creds: &QoderCreds,
+) {
+    for a in file.accounts.iter_mut() {
+        if a.app == APP_QODER && a.user_id == aid {
+            a.qoder_creds = Some(creds.to_value());
+        }
+    }
+    let _ = store.save_accounts(file);
+}
+
+/// 标记需要重新授权（凭证真正失效时才调用：服务端拒绝刷新 / 刷新后仍 401）。
+fn mark_qoder_relogin(
+    store: &Store,
+    file: &mut crate::store::AccountsFile,
+    aid: &str,
+    reason: &str,
+) {
+    for a in file.accounts.iter_mut() {
+        if a.app == APP_QODER && a.user_id == aid {
+            a.needs_relogin = true;
+            a.relogin_reason = reason.to_string();
+        }
+    }
+    let _ = store.save_accounts(file);
+}
+
 /// One Qoder round: per account ensure fresh → list campaigns → claim each →
 /// zero-CLAIMABLE fallback chain. Shared learned pool across accounts.
 pub fn run_round(store: &Store, cfg: &AppConfig, sink: &mut dyn Sink) -> Value {
@@ -745,12 +921,7 @@ pub fn run_round(store: &Store, cfg: &AppConfig, sink: &mut dyn Sink) -> Value {
             match new {
                 Some(n) => {
                     creds = n;
-                    for a in file_mut.accounts.iter_mut() {
-                        if a.app == APP_QODER && a.user_id == aid {
-                            a.qoder_creds = Some(creds.to_value());
-                        }
-                    }
-                    let _ = store.save_accounts(&file_mut);
+                    persist_qoder_creds(&store, &mut file_mut, &aid, &creds);
                 }
                 None if rejected => {
                     failed += 1;
@@ -799,68 +970,45 @@ pub fn run_round(store: &Store, cfg: &AppConfig, sink: &mut dyn Sink) -> Value {
         }
 
         let claimable = filter_claimable(&campaigns);
-        let (kind, message, reward) = if claimable.is_empty() {
-            if daily_credits_claimed_in_list(&campaigns, chrono::Utc::now().timestamp()) {
-                ("already".into(), "每日奖励已领取".into(), None)
-            } else {
-                fallback_with_relearn(&agent, &min_token, &mut learned, &mut table)
-            }
-        } else {
-            let mut kind = String::new();
-            let mut messages: Vec<String> = Vec::new();
-            let mut reward: Option<f64> = None;
-            let mut any_fail = false;
-            let mut any_already = false;
-            for c in &claimable {
-                let cid = s_of(dig(c, &["campaignId", "campaign_id"]));
-                let cname = s_of(dig(c, &["name", "title", "campaignName", "campaign_name"]));
-                let url = format!("{OPEN_API_BASE}/sash/api/v1/me/campaigns/{cid}/claim");
-                let (status, body, raw) = post_empty(&agent, &url, &minimal_auth_headers(&min_token));
-                if status == 401 {
-                    kind = "auth".into();
-                    break;
+        let kind_message = |token: &str, learned: &mut Vec<(String, String)>, table: &mut Vec<(String, String)>| -> (String, String, Option<f64>) {
+            if claimable.is_empty() {
+                if daily_credits_claimed_in_list(&campaigns, chrono::Utc::now().timestamp()) {
+                    ("already".into(), "每日奖励已领取".into(), None)
+                } else {
+                    fallback_with_relearn(&agent, token, learned, table)
                 }
-                let claimed = body.as_ref().and_then(|b| dig(b, &["status", "data.status"])).map(|v| s_of(Some(v)).to_ascii_uppercase());
-                let replayed = body.as_ref().and_then(|b| dig(b, &["replayed", "data.replayed"])).and_then(Value::as_bool).unwrap_or(false);
-                let bkind = body.as_ref().and_then(|b| b.get("benefit")).and_then(|x| x.get("kind")).and_then(Value::as_str);
-                match classify_blind_step(status, claimed.clone(), replayed, bkind) {
-                    BlindStep::Auth => { kind = "auth".into(); break; }
-                    BlindStep::FreshClaim => {
-                        kind = "success".into();
-                        messages.push(format!("{}（领取成功）", if cname.is_empty() { &cid } else { &cname }));
-                        let amt = body.as_ref().and_then(|b| b.get("benefit")).and_then(|x| x.get("amount")).and_then(|v| num_or_none(Some(v)));
-                        if let Some(a) = amt { reward = Some(reward.unwrap_or(0.0) + a); }
-                    }
-                    BlindStep::Replay => {
-                        any_already = true;
-                        if kind.is_empty() { kind = "already".into(); }
-                        messages.push(format!("{}（已领取）", if cname.is_empty() { &cid } else { &cname }));
-                    }
-                    BlindStep::Failed(code) => {
-                        any_fail = true;
-                        kind = "fail".into();
-                        messages.push(format!("{}：{}", if cname.is_empty() { &cid } else { &cname }, describe_blind_failure(code, claimed.as_deref(), &raw)));
-                    }
-                }
-            }
-            // priority merge: success > fail > already (P2)
-            let final_kind = if kind == "auth" {
-                "auth".to_string()
-            } else if any_fail && !messages.is_empty() && reward.is_some() && !any_already {
-                "fail".into()
-            } else if any_fail && !messages.iter().any(|m| m.contains("领取成功")) {
-                "fail".into()
-            } else if reward.is_some() || messages.iter().any(|m| m.contains("领取成功")) {
-                "success".into()
-            } else if any_already {
-                "already".into()
-            } else if any_fail {
-                "fail".into()
             } else {
-                "already".into()
-            };
-            (final_kind, messages.join("；"), reward)
+                claim_claimable(&agent, token, &claimable)
+            }
         };
+        let (mut kind, mut message, mut reward) = kind_message(&min_token, &mut learned, &mut table);
+        // 401：刷新一次仅重试失败分支（禁二次刷新，对齐 wb_checkin F-09 / upstream）
+        if kind == "auth" {
+            match refresh_token_once_ex(&agent, cfg, &creds) {
+                (Some(new), _) => {
+                    persist_qoder_creds(&store, &mut file_mut, &aid, &new);
+                    creds = new;
+                    let (k, m, r) = kind_message(&creds.access_token, &mut learned, &mut table);
+                    (kind, message, reward) = (k, m, r);
+                    if kind == "auth" {
+                        mark_qoder_relogin(&store, &mut file_mut, &aid, "签到重试后仍 401");
+                        kind = "fail".into();
+                        message = "登录态失效（刷新后仍 401），需重新登录".into();
+                    }
+                }
+                (None, true) => {
+                    // 服务端 4xx 永久拒绝刷新：重试无解，落 needs_relogin 引导用户重登
+                    mark_qoder_relogin(&store, &mut file_mut, &aid, "签到 refresh 被服务端拒绝");
+                    kind = "fail".into();
+                    message = "凭证已失效，需重新授权".into();
+                }
+                (None, false) => {
+                    // 暂态失败（网络/服务端 5xx）：不得误标需重登，下轮自然重试
+                    kind = "fail".into();
+                    message = "登录态刷新失败（网络），稍后重试".into();
+                }
+            }
+        }
 
         match kind.as_str() {
             "success" => {
@@ -967,6 +1115,79 @@ mod tests {
         assert_eq!(table[0].0, "fresh-id");
     }
 
+    /// issue #143：`/device/token/refresh` 的 200 响应把令牌放在 `device_token`，
+    /// 到期是 RFC3339 的 `expires_at`——旧解析只认 accessToken/expiresIn，
+    /// 会把成功响应当作「结构异常」，续期恒失败。
+    #[test]
+    fn device_token_refresh_response_parses_device_token_and_expires_at() {
+        let body = json!({
+            "created_at": "2026-10-25T04:41:16Z",
+            "device_token": "dt-test",
+            "expires_at": "2026-11-24T04:41:16Z",
+            "refresh_token": "drt-test"
+        });
+        let mut c = QoderCreds::default();
+        assert!(apply_refresh_response(&mut c, &body, 0));
+        assert_eq!(c.access_token, "dt-test");
+        assert_eq!(c.refresh_token, "drt-test");
+        assert_eq!(
+            c.expires_at_ms,
+            Some(
+                chrono::DateTime::parse_from_rfc3339("2026-11-24T04:41:16Z")
+                    .unwrap()
+                    .timestamp_millis()
+            )
+        );
+    }
+
+    /// 兼容旧形态（accessToken + expiresIn 毫秒），不回归。
+    #[test]
+    fn legacy_refresh_response_still_parses_expires_in() {
+        let body = json!({
+            "accessToken": "jt-test",
+            "expiresIn": 86_400_000_i64,
+            "refreshToken": "jrt-test"
+        });
+        let mut c = QoderCreds::default();
+        assert!(apply_refresh_response(&mut c, &body, 1_000));
+        assert_eq!(c.access_token, "jt-test");
+        assert_eq!(c.refresh_token, "jrt-test");
+        // normalize_expires_in: >30d 视为毫秒，否则视为秒 → 86400000 走毫秒分支
+        assert_eq!(c.expires_at_ms, Some(1_000 + 86_400_000));
+    }
+
+    /// 缺到期字段时落保守基准（now+12h），避免每次调用都重发刷新。
+    #[test]
+    fn refresh_response_without_expiry_uses_conservative_baseline() {
+        let mut c = QoderCreds::default();
+        assert!(apply_refresh_response(&mut c, &json!({"deviceToken": "dt-2"}), 0));
+        assert_eq!(c.access_token, "dt-2");
+        assert_eq!(c.expires_at_ms, Some(12 * 3_600_000));
+        // 完全无令牌字段 → 判失败（不覆盖已有凭据）
+        let mut d = QoderCreds::default();
+        d.access_token = "keep".into();
+        assert!(!apply_refresh_response(&mut d, &json!({"ok": true}), 0));
+        assert_eq!(d.access_token, "keep");
+    }
+
+    /// issue #140：授权 URL 直连 SSO 登录页，oauth_callback 全量编码且带 directLogin。
+    #[test]
+    fn auth_url_targets_sso_with_encoded_callback() {
+        let f = DeviceFlow::new();
+        assert!(f.auth_url.starts_with(&format!("{SSO_LOGIN_BASE}?oauth_callback=")), "{}", f.auth_url);
+        // 回调里的分隔符必须已编码，否则 query 被截断
+        let callback = f.auth_url.split("oauth_callback=").nth(1).unwrap();
+        assert!(!callback.contains('&'), "callback must be fully percent-encoded: {callback}");
+        assert!(!callback.contains('?'));
+        assert!(callback.contains("%3A%2F%2Fqoder.cn%2Fdevice%2FselectAccounts%3F"));
+        assert!(callback.contains("directLogin%3Dtrue"));
+        assert!(callback.contains("client_id%3D732aef47"), "client_id must survive encoding");
+        // compat 模式（无 client_id）同样直连 SSO
+        let c = DeviceFlow::new_compat();
+        assert!(c.auth_url.starts_with(SSO_LOGIN_BASE));
+        assert!(!c.auth_url.contains("client_id"));
+    }
+
     #[test]
     fn device_profile_shapes_and_stability() {
         let p1 = DeviceProfile::generate("uid-1");
@@ -1044,21 +1265,27 @@ mod tests {
         assert_ne!(f1.nonce, f2.nonce);
         assert_ne!(f1.verifier, f2.verifier);
         assert_eq!(f1.verifier.len(), 64);
-        assert!(f1.auth_url.starts_with(DEVICE_AUTH_BASE));
-        for key in ["challenge=", "challenge_method=S256", "nonce=", "machine_id=", "client_id="] {
+        assert!(f1.auth_url.starts_with(SSO_LOGIN_BASE));
+        for key in [
+            "challenge%3D",
+            "challenge_method%3DS256",
+            "nonce%3D",
+            "machine_id%3D",
+            "client_id%3D",
+        ] {
             assert!(f1.auth_url.contains(key), "auth_url 缺少 {key}");
         }
-        assert!(f1.auth_url.contains(&format!("client_id={DEVICE_AUTH_CLIENT_ID}")));
-        // 不携带 directLogin：官方客户端与社区实现均不发送该参数
-        assert!(!f1.auth_url.contains("directLogin"));
+        assert!(f1.auth_url.contains("client_id%3D732aef47"), "client_id 编码后必须在回调内");
+        // issue #140：directLogin=true 单个出现在回调内（模拟授权页自构形态）
+        assert!(f1.auth_url.contains("directLogin%3Dtrue"));
         // challenge 可由 verifier 复算（S256 绑定）
         let expect = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(sha2::Sha256::digest(f1.verifier.as_bytes()));
-        assert!(f1.auth_url.contains(&format!("challenge={expect}")));
+        assert!(f1.auth_url.contains(&format!("challenge%3D{expect}")));
         // compat 模式不带 client_id
         let fc = DeviceFlow::new_compat();
         assert!(fc.client_id.is_none());
-        assert!(!fc.auth_url.contains("client_id="));
+        assert!(!fc.auth_url.contains("client_id"));
     }
 
     #[test]

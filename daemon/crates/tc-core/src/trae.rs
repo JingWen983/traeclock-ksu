@@ -13,7 +13,10 @@ use chrono::TimeZone;
 
 use crate::config::AppConfig;
 use crate::envelope::{as_int_tolerant, find_payload_field, parse_claim_reward};
-use crate::error::{classify_error, humanize_device_limit, CooldownState};
+use crate::error::{
+    classify_error, humanize_checkin_error, is_auth_rejected_error, is_device_signed_error,
+    secs_until_next_checkin_reset, CooldownState,
+};
 use crate::events::{Event, Sink};
 use crate::fingerprint::DeviceEntry;
 use crate::http;
@@ -123,7 +126,7 @@ fn status_check(agent: &ureq::Agent, cfg: &AppConfig, jwt: &str, dev: &DeviceEnt
             ok: false,
             checked_in,
             credits,
-            message: if msg.is_empty() { format!("HTTP {status}") } else { humanize_device_limit(&msg) },
+            message: if msg.is_empty() { format!("HTTP {status}") } else { humanize_checkin_error(&msg) },
         };
     }
     StatusOutcome { ok: true, checked_in, credits, message: msg }
@@ -149,7 +152,7 @@ fn signin_request(
             let msg = data
                 .get("message")
                 .and_then(Value::as_str)
-                .map(humanize_device_limit)
+                .map(humanize_checkin_error)
                 .unwrap_or_else(|| format!("HTTP {status}"));
             (code == Some(0), msg, code, status, Some(data))
         }
@@ -258,7 +261,19 @@ fn checkin_one(
             resolve_claim_credits(claim_data.as_ref(), pre.credits, Some(&mut recheck));
         return (AccountStatus::Success, uid, msg, credits, delta, None, 0);
     }
-    let (error_type, cooldown_secs) = classify_error(http_status, code);
+    let (mut error_type, mut cooldown_secs) = classify_error(http_status, code);
+    // 「服务端拒绝认证」（issue #128）：HTTP 200 + 业务码拒绝的凭证级失效，重试与
+    // 短冷却均无法自愈——单列永久类型（对齐 SessionDead 口径，需重走 OAuth）
+    if is_auth_rejected_error(&msg) {
+        error_type = "AuthRejected";
+        cooldown_secs = -1;
+    }
+    // 「设备当日已签」（issue #110）：当日去重不因重试解除，冷却拨到明日 00:05，
+    // 避免固定时长跨日误挡次日签到
+    if is_device_signed_error(&msg) {
+        error_type = "DeviceSigned";
+        cooldown_secs = secs_until_next_checkin_reset();
+    }
     if error_type != "Unknown" {
         cooldowns.update(&uid, error_type, cooldown_secs, &msg);
     }
