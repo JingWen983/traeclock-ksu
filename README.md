@@ -64,9 +64,22 @@ scripts/bump-version.sh 0.5.22
 ## 安装与使用
 
 1. KernelSU 管理器刷入 `TraeClock.zip` → 重启（守护进程自启）。
-2. 安装管理器 APK → 授予 root。
-3. 「登录」页按向导添加账号（三应用都是网页登录，无需电脑）。
-4. 「概览」页确认下次签到时间；需要立即签点「立即签到」。
+   - **管理器 App 会自动装好**：zip 里带了 `manager/TraeClockManager.apk`，
+     安装时比对 versionCode —— 没装就装、装的是旧版就覆盖升级、已是最新则跳过。
+     刷模块 = 模块 + 管理器一起更新，不用再单独下载 APK。
+2. 打开「TraeClock」→ 授予 root。
+3. 「账号」页右下角 + 添加账号（三应用都是网页登录，无需电脑）。
+4. 「主页」确认下次签到时间；需要立即签点「立即签到（全部）」。
+
+### 自动更新（KernelSU / Magisk）
+
+`module.prop` 的 `updateJson` 指向
+`https://raw.githubusercontent.com/JingWen983/traeclock-ksu/main/update.json`，
+模块管理器里点「检查更新」即可拉到最新版 zip。
+
+- `update.json` 由 CI 在打 tag 发版时**自动按 `VERSION` 生成并回提交**到 main，
+  清单版本不需要手改，不会和 Release 漂移
+- 只想更守护进程、不想重启：`su -c 'sh /data/adb/traeclock/update.sh <zip>'`
 
 ## 数据与隐私
 
