@@ -125,7 +125,8 @@ fun AboutPage() {
         isFullSize = true,
         modifier = Modifier.fillMaxSize(),
         alpha = { 1f - progress },
-        baseColor = LocalAppBackground.current,
+        // 基底跟随全 App 底色（深色纯黑 / 浅色 Miuix 背景）；未提供时用 Miuix surface
+        baseColor = LocalAppBackground.current ?: MiuixTheme.colorScheme.surface,
     ) {
         LazyColumn(
             state = listState,

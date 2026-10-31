@@ -57,6 +57,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.FloatingActionButton
@@ -86,8 +87,9 @@ val LocalPageInsets = androidx.compose.runtime.staticCompositionLocalOf { androi
  *  geometry this used to be hard-coded to. */
 val LocalBottomBarSpace = androidx.compose.runtime.staticCompositionLocalOf { 92.dp }
 /** 页面底色（深色 = OLED 纯黑，浅色 = Miuix background）。需要与根背景严格一致的
- *  场景（如关于页渐变背景的 surface 基底）从这里读，不要直接用 colorScheme.background。 */
-val LocalAppBackground = androidx.compose.runtime.staticCompositionLocalOf { Color.Black }
+ *  场景（如关于页渐变背景的 surface 基底）从这里读，不要直接用 colorScheme.background。
+ *  默认值为 null（未提供时由使用方回退到 Miuix 背景/表面色，避免浅色模式误用纯黑）。 */
+val LocalAppBackground = androidx.compose.runtime.staticCompositionLocalOf<Color?> { null }
 /** Merge a page's base content padding with the scaffold insets (top bar +
  *  bottom bar) so content scrolls UNDER the blurred chrome (HyperNavBar). */
 @Composable
@@ -167,12 +169,13 @@ fun TraeClockApp() {
         // plain surface bar (null = blur disabled, same as HyperNavBar).
         val hazeState = if (android.os.Build.VERSION.SDK_INT >= 33) rememberHazeState() else null
         val surfaceColor = MiuixTheme.colorScheme.surface
-        // 深色模式 = OLED 纯黑基底（用户指定）：根背景 / 顶栏模糊底色 / 底栏 backdrop
-        // 全部走黑色，Miuix 默认的 #242424 灰底不再露出；浅色模式维持原样。
-        val isDarkTheme = run {
-            0.2126f * surfaceColor.red + 0.7152f * surfaceColor.green + 0.0722f * surfaceColor.blue < 0.5f
-        }
-        val appBackground = if (isDarkTheme) Color.Black else MiuixTheme.colorScheme.background
+        // 深色判定改用系统的深浅标志（与 MiuixTheme 的 ColorSchemeMode.System 同源），
+        // 不再用 surface 亮度反推 —— 后者在浅色 palette 上可能误判，导致「浅色模式
+        // 背景不生效」（被判成深色 → 底色走了纯黑/顶栏被刷同色）。
+        val isDarkTheme = androidx.compose.foundation.isSystemInDarkTheme()
+        // 深色 = OLED 纯黑；浅色 = Miuix background（维持原白底观感）
+        val appBackground =
+            if (isDarkTheme) Color.Black else MiuixTheme.colorScheme.background
         val barColor = if (hazeState != null) androidx.compose.ui.graphics.Color.Transparent else appBackground
 
         // liquid-glass bottom bar backdrop: content is captured into a layer
@@ -500,9 +503,7 @@ fun HomePage() {
                                 Text(msg, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.primary)
                                 Spacer(Modifier.height(8.dp))
                             }
-                            TextButton(
-                                text = if (busy) "签到中…" else "立即签到（全部）",
-                                enabled = !busy,
+                            Button(
                                 onClick = {
                                     busy = true; msg = "签到中…"
                                     scope.launch {
@@ -514,8 +515,12 @@ fun HomePage() {
                                         refreshDiffs()
                                     }
                                 },
+                                enabled = !busy,
+                                colors = ButtonDefaults.buttonColorsPrimary(),
                                 modifier = Modifier.fillMaxWidth(),
-                            )
+                            ) {
+                                Text(if (busy) "签到中…" else "立即签到（全部）")
+                            }
                         }
                     }
                 } else {
@@ -1291,8 +1296,7 @@ fun SettingsPage(onOpenAbout: () -> Unit = {}) {
                 }
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(horizontal = 4.dp, vertical = 12.dp)) {
-                        TextButton(
-                            text = "保存设置",
+                        Button(
                             onClick = {
                                 val startMin = (startH * 60 + startM).coerceIn(0, 24 * 60)
                                 val endMinRaw = endH * 60 + endM
@@ -1305,8 +1309,11 @@ fun SettingsPage(onOpenAbout: () -> Unit = {}) {
                                     saved = if (r.code == 0) "已保存" else "保存失败: ${r.stdout.take(120)}"
                                 }
                             },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
+                            colors = ButtonDefaults.buttonColorsPrimary(),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                        ) {
+                            Text("保存设置")
+                        }
                         if (saved.isNotEmpty()) {
                             Spacer(Modifier.height(6.dp))
                             Text(
