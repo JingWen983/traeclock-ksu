@@ -76,13 +76,19 @@ import androidx.compose.ui.viewinterop.AndroidView
 
 /** Scaffold inner paddings passed down so pages can scroll UNDER the blurred top bar. */
 val LocalPageInsets = androidx.compose.runtime.staticCompositionLocalOf { androidx.compose.foundation.layout.PaddingValues(0.dp) }
+/** Measured vertical footprint of the liquid-glass bottom bar (pill height +
+ *  its bottom padding incl. the navigation-bar inset). Pages and FABs offset
+ *  from this instead of a hard-coded dp so gesture-nav / 3-button-nav devices
+ *  (≈48dp apart) both clear the bar by the same gap. Fallback = the gesture-nav
+ *  geometry this used to be hard-coded to. */
+val LocalBottomBarSpace = androidx.compose.runtime.staticCompositionLocalOf { 92.dp }
 /** Merge a page's base content padding with the scaffold insets (top bar +
  *  bottom bar) so content scrolls UNDER the blurred chrome (HyperNavBar). */
 @Composable
 fun pagePadding(base: PaddingValues): PaddingValues {
     val insets = LocalPageInsets.current
     val barTop = insets.calculateTopPadding()
-    val bottom = insets.calculateBottomPadding() + 96.dp
+    val bottom = LocalBottomBarSpace.current + 8.dp
     return PaddingValues(
         start = 12.dp,
         end = 12.dp,
@@ -160,6 +166,11 @@ fun TraeClockApp() {
             drawContent()
         }
 
+        // bottom bar footprint, measured from the real pill (see LiquidGlassBottomBar):
+        // FABs and page bottom padding offset from it, so the gap is identical on
+        // gesture-nav and 3-button-nav devices instead of a fixed dp guess.
+        var barSpace by remember { mutableStateOf(92.dp) }
+
         Box(Modifier.fillMaxSize().background(MiuixTheme.colorScheme.background)) {
             // page host: Haze blur source + top bar with progressive blur
             top.yukonga.miuix.kmp.basic.Scaffold(
@@ -197,6 +208,7 @@ fun TraeClockApp() {
                 // behind it (HyperNavBar pattern); pages consume the paddings themselves
                 CompositionLocalProvider(
                     LocalPageInsets provides innerPadding,
+                    LocalBottomBarSpace provides barSpace,
                 ) {
                 Box(
                     Modifier
@@ -219,6 +231,7 @@ fun TraeClockApp() {
                 selected = tab,
                 onSelect = { tab = it },
                 backdrop = backdrop,
+                onSpaceChange = { barSpace = it },
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
         }
@@ -235,33 +248,47 @@ private fun LiquidGlassBottomBar(
     selected: Int,
     onSelect: (Int) -> Unit,
     backdrop: top.yukonga.miuix.kmp.blur.Backdrop,
+    onSpaceChange: (androidx.compose.ui.unit.Dp) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val navigationBarBottom = androidx.compose.foundation.layout.WindowInsets
         .navigationBars.asPaddingValues().calculateBottomPadding()
     val bottomPadding = if (navigationBarBottom != 0.dp) 8.dp + navigationBarBottom else 28.dp
+    val density = androidx.compose.ui.platform.LocalDensity.current
     Box(modifier = modifier.fillMaxWidth()) {
-        LiquidGlassNavigationBar(
-            modifier = Modifier
+        // outer box carries the bottom padding so the measured inner node is the
+        // pill alone (horizontal-only padding cannot change height) → footprint =
+        // pill height + bottom padding, reported to FABs / page content
+        Box(
+            Modifier
                 .align(Alignment.BottomCenter)
-                .pointerInput(Unit) { detectTapGestures { } }
-                .padding(start = 28.dp, end = 28.dp, bottom = bottomPadding),
-            selectedIndex = selected,
-            onSelected = onSelect,
-            backdrop = backdrop,
-            tabsCount = tabs.size,
-        ) { activateTab ->
-            tabs.forEachIndexed { index, label ->
-                LiquidGlassNavigationBarItem(
-                    selected = selected == index,
-                    onClick = { activateTab(index) },
-                    modifier = Modifier.defaultMinSize(minWidth = 76.dp),
-                ) {
-                    Icon(imageVector = icons[index], contentDescription = label)
-                    Text(
-                        text = label,
-                        style = MiuixTheme.textStyles.footnote2,
-                    )
+                .padding(bottom = bottomPadding),
+        ) {
+            LiquidGlassNavigationBar(
+                modifier = Modifier
+                    .pointerInput(Unit) { detectTapGestures { } }
+                    .padding(start = 28.dp, end = 28.dp)
+                    .onGloballyPositioned { coords ->
+                        val pill = with(density) { coords.size.height.toDp() }
+                        if (pill > 0.dp) onSpaceChange(pill + bottomPadding)
+                    },
+                selectedIndex = selected,
+                onSelected = onSelect,
+                backdrop = backdrop,
+                tabsCount = tabs.size,
+            ) { activateTab ->
+                tabs.forEachIndexed { index, label ->
+                    LiquidGlassNavigationBarItem(
+                        selected = selected == index,
+                        onClick = { activateTab(index) },
+                        modifier = Modifier.defaultMinSize(minWidth = 76.dp),
+                    ) {
+                        Icon(imageVector = icons[index], contentDescription = label)
+                        Text(
+                            text = label,
+                            style = MiuixTheme.textStyles.footnote2,
+                        )
+                    }
                 }
             }
         }
@@ -841,14 +868,14 @@ fun AccountsPage() {
                 }
             }
 
-            // add-account FAB, bottom-right. bottom padding must clear the glass
-            // bar (nav inset + 12dp gap + 64dp bar ≈ 100dp) — 24dp still
-            // overlapped it (user report), 108dp sits above with margin.
+            // add-account FAB, bottom-right. Anchored to the MEASURED bar footprint
+            // (pill height + nav inset) + 12dp gap, right edge aligned with the pill's
+            // 28dp side padding — a fixed dp overlapped the bar on 3-button-nav devices.
             FloatingActionButton(
                 onClick = { showAddSheet = true },
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(end = 20.dp, bottom = 108.dp),
+                    .padding(end = 28.dp, bottom = LocalBottomBarSpace.current + 12.dp),
             ) {
                 FabIcon(MiuixIcons.Add, "添加账号")
             }
@@ -1093,7 +1120,7 @@ fun LogPage() {
                     start = 12.dp,
                     end = 12.dp,
                     top = LocalPageInsets.current.calculateTopPadding() + 8.dp,
-                    bottom = LocalPageInsets.current.calculateBottomPadding() + 96.dp,
+                    bottom = LocalBottomBarSpace.current + 8.dp,
                 ),
             ) {
                 items(lines.reversed()) { raw ->
@@ -1112,12 +1139,12 @@ fun LogPage() {
                 if (lines.isEmpty()) item { Text("暂无日志（等待守护进程执行签到）", style = MiuixTheme.textStyles.body2) }
             }
 
-            // refresh FAB — same style/position as the accounts add button
+            // refresh FAB — same measured anchor as the accounts add button
             FloatingActionButton(
                 onClick = { scope.launch { withContext(Dispatchers.IO) { lines = RootCtl.log(300) } } },
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(end = 20.dp, bottom = 108.dp),
+                    .padding(end = 28.dp, bottom = LocalBottomBarSpace.current + 12.dp),
             ) {
                 FabIcon(MiuixIcons.Refresh, "刷新日志")
             }
