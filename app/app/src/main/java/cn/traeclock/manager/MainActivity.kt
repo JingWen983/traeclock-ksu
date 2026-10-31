@@ -7,6 +7,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -1076,6 +1077,36 @@ private fun EmbeddedLoginWebview(
     onWbFinish: () -> Unit,
     onQoderFinish: () -> Unit,
 ) {
+    // 全屏 Dialog 承载登录页：Composable 里普通的 if 层只能盖住页面内容区，
+    // 盖不住 Scaffold 的 topBar（用户反馈「进入网页登录后『日志』顶栏还在」）。
+    // Dialog 独立窗口，天然覆盖整屏，且自身有窗口背景，不会与下层合成导致闪屏。
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onClose,
+        properties = androidx.compose.ui.window.DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false,
+        ),
+    ) {
+        LoginWebviewContent(
+            url = url,
+            title = title,
+            onClose = onClose,
+            onTraeCallback = onTraeCallback,
+            onWbFinish = onWbFinish,
+            onQoderFinish = onQoderFinish,
+        )
+    }
+}
+
+@Composable
+private fun LoginWebviewContent(
+    url: String,
+    title: String,
+    onClose: () -> Unit,
+    onTraeCallback: (String) -> Unit,
+    onWbFinish: () -> Unit,
+    onQoderFinish: () -> Unit,
+) {
     val isTrae = title.startsWith("Trae")
     val isWb = title.startsWith("WorkBuddy")
     val context = RootCtlAppContextHolder.context
@@ -1085,7 +1116,15 @@ private fun EmbeddedLoginWebview(
     var lastError by remember(url) { mutableStateOf("") }
     var currentUrl by remember(url) { mutableStateOf(url) }
 
-    Column(Modifier.fillMaxSize()) {
+    // 不透明底色 + 系统栏避让：Dialog 窗口默认透明，WebView 白底在合成首帧会
+    // 闪一下（用户反馈「登录时网页闪屏」）。给出实心背景并把内容让开状态栏。
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(MiuixTheme.colorScheme.surface)
+            .statusBarsPadding()
+            .navigationBarsPadding(),
+    ) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1127,6 +1166,8 @@ private fun EmbeddedLoginWebview(
         }
         val webView = remember(url) {
             android.webkit.WebView(context).apply {
+                // 先给 WebView 一个实心底色，避免首帧上屏前透出下层（闪屏）
+                setBackgroundColor(android.graphics.Color.WHITE)
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
                 settings.databaseEnabled = true
@@ -1190,7 +1231,8 @@ private fun EmbeddedLoginWebview(
         }
         AndroidView(
             factory = { webView },
-            modifier = Modifier.fillMaxSize(),
+            // 底色兜住 WebView 首帧（Dialog 窗口透明 + WebView 白底切换时会闪）
+            modifier = Modifier.fillMaxSize().background(MiuixTheme.colorScheme.surface),
         )
         DisposableEffect(url) {
             onDispose { webView.destroy() }
