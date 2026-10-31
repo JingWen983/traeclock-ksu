@@ -47,6 +47,20 @@
 - `TraeClock.zip` — KernelSU 模块（arm64-v8a / armeabi-v7a / x86_64）
 - `app-release-signed.apk` — 管理器（配置 `TRAECLOCK_KEYSTORE_B64` 等 secrets 后自动签名，否则为未签名包）
 
+### 版本号
+
+唯一来源是仓库根的 `VERSION`，改版本只跑一条命令：
+
+```bash
+scripts/bump-version.sh 0.5.22
+```
+
+- `versionCode = X*10000 + Y*100 + Z`（0.5.21 → 521），每段必须 < 100
+- `app/app/build.gradle.kts` 的 `versionName`/`versionCode` 直接读 `VERSION`，不需要改
+- 脚本同步 `daemon/Cargo.toml` 与 `module/module.prop`（这两处 cargo / KernelSU 只能读字面量）
+- CI 的 `version-guard` job 会校验三处一致，并检查打 tag 时 `tag == v$VERSION`；不一致直接挡住构建
+- 管理器「关于」页显示的版本是**运行时读取**的（APK 走 PackageManager，模块读 `module.prop`），不是写死的字符串
+
 ## 安装与使用
 
 1. KernelSU 管理器刷入 `TraeClock.zip` → 重启（守护进程自启）。

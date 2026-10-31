@@ -4,6 +4,19 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// 版本号唯一来源：仓库根的 VERSION（scripts/bump-version.sh 维护）。
+// gradle 直接从文件派生，所以 APK 的 versionName/versionCode 不会和 VERSION 漂移；
+// 改版本只需跑脚本（它同时同步 daemon/Cargo.toml 与 module/module.prop）。
+val appVersionName: String = rootProject.file("../VERSION").readText().trim()
+val appVersionCode: Int = appVersionName.split(".").let { parts ->
+    require(parts.size == 3) { "VERSION 必须是 X.Y.Z，实际: $appVersionName" }
+    val (major, minor, patch) = parts.map { it.trim().toInt() }
+    require(major < 100 && minor < 100 && patch < 100) {
+        "VERSION 每段必须 < 100（versionCode 段位编码），实际: $appVersionName"
+    }
+    major * 10_000 + minor * 100 + patch
+}
+
 android {
     namespace = "cn.traeclock.manager"
     compileSdk = 37
@@ -12,8 +25,8 @@ android {
         applicationId = "cn.traeclock.manager"
         minSdk = 26
         targetSdk = 37
-        versionCode = 35
-        versionName = "0.5.21"
+        versionCode = appVersionCode
+        versionName = appVersionName
     }
 
     buildTypes {

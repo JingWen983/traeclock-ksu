@@ -11,8 +11,41 @@ permissions:
   contents: write
 
 jobs:
+  # 版本号守卫：VERSION 是唯一来源，其余两处字面量（cargo / module.prop）必须一致；
+  # 打 tag 时 tag 也必须是 v$VERSION。不一致直接挡住后面两个构建 job。
+  version-guard:
+    name: Version guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: All version references agree with VERSION
+        run: |
+          set -uo pipefail
+          V=$(tr -d ' \r\n' < VERSION)
+          CODE=$(awk -F. -v v="$V" 'BEGIN{split(v,a,"."); printf "%d", a[1]*10000 + a[2]*100 + a[3]}')
+          CARGO=$(grep -m1 '^version = ' daemon/Cargo.toml | cut -d'"' -f2)
+          PROP_V=$(grep -m1 '^version=' module/module.prop | cut -d= -f2)
+          PROP_C=$(grep -m1 '^versionCode=' module/module.prop | cut -d= -f2)
+          GRADLE_READS_VERSION=$(grep -c 'rootProject.file("../VERSION")' app/app/build.gradle.kts || true)
+          echo "VERSION=$V versionCode=$CODE"
+          echo "cargo=$CARGO module.prop=$PROP_V/$PROP_C gradle-reads-VERSION=$GRADLE_READS_VERSION"
+          fail=0
+          chk() { if [ "$2" != "$3" ]; then echo "::error file=$1::版本不一致: '$2' != '$3'"; fail=1; fi; }
+          chk daemon/Cargo.toml "$CARGO" "$V"
+          chk module/module.prop "$PROP_V" "v$V"
+          chk module/module.prop "$PROP_C" "$CODE"
+          if [ "$GRADLE_READS_VERSION" = "0" ]; then
+            echo "::error file=app/app/build.gradle.kts::versionName/versionCode 必须从 ../VERSION 派生，不要写字面量"
+            fail=1
+          fi
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            chk "git tag" "${GITHUB_REF_NAME:-}" "v$V"
+          fi
+          exit $fail
+
   rust:
     name: Rust (aarch64/armv7/x86_64)
+    needs: [version-guard]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -66,7 +99,7 @@ jobs:
 
       - name: Assemble KernelSU module zip
         run: |
-          VERSION=$(grep '^version =' daemon/Cargo.toml | head -1 | cut -d'"' -f2)
+          VERSION=$(tr -d ' \r\n' < VERSION)
           STAGE="module-stage"
           cp -r module "$STAGE"
           mkdir -p "$STAGE/bin"
@@ -85,6 +118,7 @@ jobs:
 
   app:
     name: Manager App APK
+    needs: [version-guard]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -155,7 +189,7 @@ jobs:
   release:
     name: GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [rust, app]
+    needs: [version-guard, rust, app]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
