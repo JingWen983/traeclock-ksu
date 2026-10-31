@@ -43,6 +43,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import cn.traeclock.manager.ui.effect.BgEffectBackground
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.preference.ArrowPreference
@@ -143,7 +144,10 @@ fun AboutPage() {
             item { Spacer(Modifier.height(logoHeight + 44.dp)) }
 
             item {
-                Card(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                    colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
+                ) {
                     Column {
                         ArrowPreference(
                             title = "源代码",
@@ -160,7 +164,10 @@ fun AboutPage() {
             }
 
             item {
-                Card(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                    colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
+                ) {
                     Column {
                         ArrowPreference(
                             title = "开源许可",
@@ -177,7 +184,10 @@ fun AboutPage() {
             }
 
             item {
-                Card(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                    colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
+                ) {
                     Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
                         InfoLine("管理器版本", "$versionName ($versionCode)")
                         InfoLine("模块版本", moduleVersion ?: "未检测到")
@@ -188,7 +198,10 @@ fun AboutPage() {
             }
 
             item {
-                Card(modifier = Modifier.fillMaxWidth()) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
+                ) {
                     Text(
                         "全部数据保存在本机，不上传任何服务器。\n" +
                             "签到逻辑移植自 TraeWorkAssistant，液态玻璃底栏移植自 HyperNavBar。",

@@ -60,6 +60,7 @@ import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.FloatingActionButton
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
@@ -90,6 +91,10 @@ val LocalBottomBarSpace = androidx.compose.runtime.staticCompositionLocalOf { 92
  *  场景（如关于页渐变背景的 surface 基底）从这里读，不要直接用 colorScheme.background。
  *  默认值为 null（未提供时由使用方回退到 Miuix 背景/表面色，避免浅色模式误用纯黑）。 */
 val LocalAppBackground = androidx.compose.runtime.staticCompositionLocalOf<Color?> { null }
+/** 卡片（元素）底色。深色 = Miuix surfaceContainer(#242424)，浅色 = #F2F2F2。
+ *  Miuix 浅色默认 surfaceContainer 只有 #FCFCFC，配纯白页底肉眼无边界，
+ *  统一由这里下发，保证「所有元素都有可见背景」。 */
+val LocalCardColor = androidx.compose.runtime.staticCompositionLocalOf<Color?> { null }
 /** Merge a page's base content padding with the scaffold insets (top bar +
  *  bottom bar) so content scrolls UNDER the blurred chrome (HyperNavBar). */
 @Composable
@@ -173,9 +178,13 @@ fun TraeClockApp() {
         // 不再用 surface 亮度反推 —— 后者在浅色 palette 上可能误判，导致「浅色模式
         // 背景不生效」（被判成深色 → 底色走了纯黑/顶栏被刷同色）。
         val isDarkTheme = androidx.compose.foundation.isSystemInDarkTheme()
-        // 深色 = OLED 纯黑；浅色 = Miuix background（维持原白底观感）
-        val appBackground =
-            if (isDarkTheme) Color.Black else MiuixTheme.colorScheme.background
+        // 深色 = 纯黑页 + #242424 卡片；浅色 = 纯白页 + 浅灰卡片（HyperNavBar 同款层次）。
+        // Miuix 浅色 surfaceContainer 实测仅 #FCFCFC，与纯白 background 只差 2~3 个色阶，
+        // 肉眼分不出边界（用户反馈「浅色模式背景不生效」）。所以浅色卡片另行加深一档。
+        val appBackground = if (isDarkTheme) Color.Black else MiuixTheme.colorScheme.background
+        // 卡片底色：深色沿用 palette 的 surfaceContainer(#242424)；浅色用更明确的浅灰
+        val cardColor =
+            if (isDarkTheme) MiuixTheme.colorScheme.surfaceContainer else Color(0xFFF2F2F2)
         val barColor = if (hazeState != null) androidx.compose.ui.graphics.Color.Transparent else appBackground
 
         // liquid-glass bottom bar backdrop: content is captured into a layer
@@ -249,6 +258,7 @@ fun TraeClockApp() {
                     LocalPageInsets provides innerPadding,
                     LocalBottomBarSpace provides barSpace,
                     LocalAppBackground provides appBackground,
+                    LocalCardColor provides cardColor,
                 ) {
                 Box(
                     Modifier
@@ -357,7 +367,10 @@ fun StatusGate(content: @Composable (refresh: () -> Unit) -> Unit) {
 @Composable
 private fun GateCard(title: String, summary: String) {
     Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Card(modifier = Modifier.fillMaxWidth()) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
+        ) {
             Column(Modifier.padding(16.dp)) {
                 Text(title, style = MiuixTheme.textStyles.title2)
                 Spacer(Modifier.height(6.dp))
@@ -420,7 +433,10 @@ fun HomePage() {
                     // ── two-card dashboard row: daemon state | accounts ──
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         // left card: daemon running + today's progress + next check-in
-                        Card(modifier = Modifier.weight(1f)) {
+                        Card(
+                            modifier = Modifier.weight(1f),
+                            colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
+                        ) {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     Text(
@@ -464,7 +480,10 @@ fun HomePage() {
                             }
                         }
                         // right card: accounts summary + credits total
-                        Card(modifier = Modifier.weight(1f)) {
+                        Card(
+                            modifier = Modifier.weight(1f),
+                            colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
+                        ) {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text("账号", style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Bold)
                                 val totalEnabled = Apps.ALL.sumOf { s.counts[it]?.enabled ?: 0 }
@@ -497,7 +516,10 @@ fun HomePage() {
                     }
                     Spacer(Modifier.height(8.dp))
                     // 立即签到块：包进卡片（纯黑底上所有元素都要有可见背景）
-                    Card(modifier = Modifier.fillMaxWidth()) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
+                    ) {
                         Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
                             if (msg.isNotEmpty()) {
                                 Text(msg, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.primary)
@@ -524,7 +546,10 @@ fun HomePage() {
                         }
                     }
                 } else {
-                    Card(modifier = Modifier.fillMaxWidth()) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
+                    ) {
                         Text("加载中…", style = MiuixTheme.textStyles.body2, modifier = Modifier.padding(16.dp))
                     }
                 }
@@ -535,7 +560,10 @@ fun HomePage() {
                 val todayDiffs = diffs.filter { it.date == todayStr() }
                 val todaySum = todayDiffs.mapNotNull { it.delta }.sum()
                 SmallTitle(text = "近期积分变动")
-                Card(modifier = Modifier.fillMaxWidth()) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
+                ) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         // header row: 今日合计 +N on the right
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -605,7 +633,10 @@ fun HomePage() {
                     }
                 } else {
                     SmallTitle(text = "实时积分")
-                    Card(modifier = Modifier.fillMaxWidth()) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
+                    ) {
                         Column(Modifier.padding(16.dp)) {
                             Text("%.2f".format(snap.total), style = MiuixTheme.textStyles.title1, fontSize = 40.sp, fontWeight = FontWeight.Bold)
                             Spacer(Modifier.height(4.dp))
@@ -619,7 +650,10 @@ fun HomePage() {
                     Spacer(Modifier.height(4.dp))
                     if (snap.rows.isEmpty()) {
                         Spacer(Modifier.height(12.dp))
-                        Card(modifier = Modifier.fillMaxWidth()) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
+                        ) {
                             Text(
                                 "暂无账号，请到「登录」页添加",
                                 style = MiuixTheme.textStyles.body2,
@@ -630,7 +664,10 @@ fun HomePage() {
                     }
                     snap.rows.forEach { r ->
                         SmallTitle(text = "${Apps.displayName(r.app)} · ${r.name.ifEmpty { r.userId }}")
-                        Card(modifier = Modifier.fillMaxWidth()) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
+                        ) {
                             Column(Modifier.padding(16.dp)) {
                                 if (!r.ok) {
                                     Text("查询失败：${r.message}", style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.error)
@@ -845,7 +882,10 @@ fun AccountsPage() {
                         Apps.ALL.forEach { app -> CharChip(Apps.displayName(app), filter == app) { filter = app } }
                     }
                     if (result.isNotEmpty()) {
-                        Card(modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
+                            colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
+                        ) {
                             Column(Modifier.padding(16.dp)) {
                                 Text(result, style = MiuixTheme.textStyles.body2)
                                 Spacer(Modifier.height(6.dp))
@@ -855,7 +895,10 @@ fun AccountsPage() {
                     }
                 }
                 items(accounts, key = { it.app + it.userId }) { a ->
-                    Card(modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
+                        colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
+                    ) {
                         Column(Modifier.padding(start = 16.dp, bottom = 12.dp, top = 16.dp, end = 16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                 Text(
@@ -923,7 +966,10 @@ fun AccountsPage() {
                     }
                 }
                 if (accounts.isEmpty()) item {
-                    Card(modifier = Modifier.fillMaxWidth()) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
+                    ) {
                         Text(
                             "暂无账号，点右下角 + 添加",
                             style = MiuixTheme.textStyles.body2,
@@ -1257,7 +1303,10 @@ fun SettingsPage(onOpenAbout: () -> Unit = {}) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = pagePadding(PaddingValues(0.dp))) {
             item {
                 SmallTitle(text = "签到调度")
-                Card(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                    colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
+                ) {
                     Column {
                         // compact display rows; tapping opens a WindowDialog with pickers
                         TimeDisplayRow(
@@ -1281,7 +1330,10 @@ fun SettingsPage(onOpenAbout: () -> Unit = {}) {
                     }
                 }
                 SmallTitle(text = "平台指纹")
-                Card(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                    colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
+                ) {
                     Column {
                         val flavorItems = listOf("windows", "android")
                         val flavorIdx = flavorItems.indexOf(flavor).coerceAtLeast(0)
@@ -1294,7 +1346,10 @@ fun SettingsPage(onOpenAbout: () -> Unit = {}) {
                         )
                     }
                 }
-                Card(modifier = Modifier.fillMaxWidth()) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
+                ) {
                     Column(Modifier.padding(horizontal = 4.dp, vertical = 12.dp)) {
                         Button(
                             onClick = {
@@ -1335,7 +1390,10 @@ fun SettingsPage(onOpenAbout: () -> Unit = {}) {
                 }
                 Spacer(Modifier.height(12.dp))
                 SmallTitle(text = "其他")
-                Card(modifier = Modifier.fillMaxWidth()) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
+                ) {
                     ArrowPreference(
                         title = "关于 TraeClock",
                         summary = "版本、开源许可与上游贡献",
