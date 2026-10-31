@@ -1,7 +1,7 @@
 id=traeclock
 name=TraeClock
-version=v0.5.21
-versionCode=521
+version=v0.5.22
+versionCode=522
 author=traeclock
 description=Multi-account check-in daemon (Trae / WorkBuddy / Qoder) ported from TraeWorkAssistant, with anti-risk-control fingerprints. Managed by the TraeClock Manager app. Low power: sleeps between scheduled rounds.
-updateJson=
+updateJson=https://raw.githubusercontent.com/JingWen983/traeclock-ksu/main/update.json

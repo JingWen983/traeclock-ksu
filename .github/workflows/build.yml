@@ -41,11 +41,18 @@ jobs:
           if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
             chk "git tag" "${GITHUB_REF_NAME:-}" "v$V"
           fi
+          # update.json 由 release job 在发版时自动回写，这里只做提示不阻断：
+          # 它落后于 VERSION 是正常的（还没发这版），但领先就说明有笔误。
+          if [ -f update.json ]; then
+            UJ_V=$(grep -o '"version"[^,]*' update.json | grep -o 'v[0-9.]*' | head -1 || true)
+            echo "update.json=$UJ_V (informational; refreshed on release)"
+          fi
           exit $fail
 
   rust:
     name: Rust (aarch64/armv7/x86_64)
-    needs: [version-guard]
+    # 需要 app 的 APK 一起打进模块 zip（模块安装时自动装/更新管理器）
+    needs: [version-guard, app]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -97,13 +104,31 @@ jobs:
           done
           ls -la dist/*/ | head -30
 
+      - name: Download manager APK (bundled into the module)
+        uses: actions/download-artifact@v4
+        with:
+          name: manager-apk
+          path: manager-apk
+
       - name: Assemble KernelSU module zip
         run: |
           VERSION=$(tr -d ' \r\n' < VERSION)
+          CODE=$(awk -F. -v v="$VERSION" 'BEGIN{split(v,a,"."); printf "%d", a[1]*10000 + a[2]*100 + a[3]}')
           STAGE="module-stage"
           cp -r module "$STAGE"
           mkdir -p "$STAGE/bin"
           cp -r daemon/dist/arm64-v8a daemon/dist/armeabi-v7a daemon/dist/x86_64 "$STAGE/bin/"
+
+          # 管理器 APK 随模块分发：customize.sh 会在安装/升级时自动装或更新它。
+          # 没有 APK 时模块仍可装（只是不自动带管理器），故存在才拷。
+          if [ -f manager-apk/app-release-signed.apk ]; then
+            mkdir -p "$STAGE/manager"
+            cp manager-apk/app-release-signed.apk "$STAGE/manager/TraeClockManager.apk"
+            echo "APK bundled: $(ls -la "$STAGE/manager/")"
+          else
+            echo "::warning::manager APK artifact missing — module will not auto-install the manager"
+          fi
+
           cd "$STAGE"
           zip -r "../TraeClock-${VERSION}.zip" .
           cd ..
@@ -192,12 +217,48 @@ jobs:
     needs: [version-guard, rust, app]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with:
           name: module-zip
       - uses: actions/download-artifact@v4
         with:
           name: manager-apk
+
+      # update.json 是 KernelSU 的自动更新清单：module.prop 里的 updateJson=
+      # 指向 raw.githubusercontent.com/.../main/update.json。这里在发版时用
+      # VERSION 生成并回提交到 main，保证清单版本永远跟最新 Release 一致，
+      # 不需要人手改第二处版本号。
+      - name: Refresh update.json (KernelSU update manifest)
+        run: |
+          set -euo pipefail
+          VERSION=$(tr -d ' \r\n' < VERSION)
+          CODE=$(awk -F. -v v="$VERSION" 'BEGIN{split(v,a,"."); printf "%d", a[1]*10000 + a[2]*100 + a[3]}')
+          TAG="v${VERSION}"
+          REPO="${{ github.repository }}"
+          cat > update.json <<EOF
+          {
+            "version": "${TAG}",
+            "versionCode": ${CODE},
+            "zipUrl": "https://github.com/${REPO}/releases/download/${TAG}/TraeClock.zip",
+            "changelog": "https://github.com/${REPO}/releases/tag/${TAG}"
+          }
+          EOF
+          cat update.json
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- update.json; then
+            echo "update.json already current"
+          else
+            git add update.json
+            git commit -m "chore(update): update.json -> ${TAG} (KernelSU 自动更新清单)"
+            git push origin HEAD:main
+          fi
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:

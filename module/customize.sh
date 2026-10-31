@@ -53,3 +53,37 @@ if [ -f "$MODPATH/update.sh" ]; then
 fi
 
 ui_print "- 安装完成。重启后守护进程自启；使用 TraeClock 管理器 App 管理账号。"
+
+# ── 管理器 App：随模块自动安装 / 升级 ────────────────────────────────────────
+# 模块 zip 里带了 manager/TraeClockManager.apk（CI 打包时塞入）。
+# 已装且不旧于模块版本则跳过；装了旧版则覆盖升级；未装则安装。
+# 这步失败绝不阻塞模块安装，全程容错。
+MANAGER_APK="$MODPATH/manager/TraeClockManager.apk"
+PKG=cn.traeclock.manager
+
+if [ -f "$MANAGER_APK" ]; then
+    MODULE_VC=$(grep '^versionCode=' "$MODPATH/module.prop" | cut -d= -f2)
+    INSTALLED_VC=$(dumpsys package $PKG 2>/dev/null | grep -m1 'versionCode=' | sed 's/.*versionCode=\([0-9]*\).*/\1/')
+
+    if [ -n "$INSTALLED_VC" ] && [ "$INSTALLED_VC" -ge "$MODULE_VC" ] 2>/dev/null; then
+        ui_print "- 管理器已是最新（versionCode $INSTALLED_VC），跳过"
+    else
+        if [ -n "$INSTALLED_VC" ]; then
+            ui_print "- 更新管理器: versionCode $INSTALLED_VC → $MODULE_VC"
+        else
+            ui_print "- 安装管理器 App"
+        fi
+        # 模块目录是 root-only，pm 读不到，先复制到可读路径
+        cp -f "$MANAGER_APK" /data/local/tmp/TraeClockManager.apk 2>/dev/null
+        chmod 644 /data/local/tmp/TraeClockManager.apk 2>/dev/null
+        INSTALL_OUT=$(pm install -r -d /data/local/tmp/TraeClockManager.apk 2>&1)
+        case "$INSTALL_OUT" in
+            *Success*|*success*) ui_print "- 管理器安装完成" ;;
+            *) ui_print "! 管理器自动安装失败（不影响模块），请手动装 release 里的 APK"
+               ui_print "  $INSTALL_OUT" ;;
+        esac
+        rm -f /data/local/tmp/TraeClockManager.apk 2>/dev/null
+    fi
+else
+    ui_print "- 模块未附带管理器 APK，跳过自动安装"
+fi
