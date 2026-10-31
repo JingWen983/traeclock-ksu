@@ -85,6 +85,9 @@ val LocalPageInsets = androidx.compose.runtime.staticCompositionLocalOf { androi
  *  (≈48dp apart) both clear the bar by the same gap. Fallback = the gesture-nav
  *  geometry this used to be hard-coded to. */
 val LocalBottomBarSpace = androidx.compose.runtime.staticCompositionLocalOf { 92.dp }
+/** 页面底色（深色 = OLED 纯黑，浅色 = Miuix background）。需要与根背景严格一致的
+ *  场景（如关于页渐变背景的 surface 基底）从这里读，不要直接用 colorScheme.background。 */
+val LocalAppBackground = androidx.compose.runtime.staticCompositionLocalOf { Color.Black }
 /** Merge a page's base content padding with the scaffold insets (top bar +
  *  bottom bar) so content scrolls UNDER the blurred chrome (HyperNavBar). */
 @Composable
@@ -164,12 +167,18 @@ fun TraeClockApp() {
         // plain surface bar (null = blur disabled, same as HyperNavBar).
         val hazeState = if (android.os.Build.VERSION.SDK_INT >= 33) rememberHazeState() else null
         val surfaceColor = MiuixTheme.colorScheme.surface
-        val barColor = if (hazeState != null) androidx.compose.ui.graphics.Color.Transparent else surfaceColor
+        // 深色模式 = OLED 纯黑基底（用户指定）：根背景 / 顶栏模糊底色 / 底栏 backdrop
+        // 全部走黑色，Miuix 默认的 #242424 灰底不再露出；浅色模式维持原样。
+        val isDarkTheme = run {
+            0.2126f * surfaceColor.red + 0.7152f * surfaceColor.green + 0.0722f * surfaceColor.blue < 0.5f
+        }
+        val appBackground = if (isDarkTheme) Color.Black else MiuixTheme.colorScheme.background
+        val barColor = if (hazeState != null) androidx.compose.ui.graphics.Color.Transparent else appBackground
 
         // liquid-glass bottom bar backdrop: content is captured into a layer
         // and refracted through the pill (miuix-blur)
         val backdrop = rememberLayerBackdrop {
-            drawRect(surfaceColor)
+            drawRect(appBackground)
             drawContent()
         }
 
@@ -178,7 +187,7 @@ fun TraeClockApp() {
         // gesture-nav and 3-button-nav devices instead of a fixed dp guess.
         var barSpace by remember { mutableStateOf(92.dp) }
 
-        Box(Modifier.fillMaxSize().background(MiuixTheme.colorScheme.background)) {
+        Box(Modifier.fillMaxSize().background(appBackground)) {
             // page host: Haze blur source + top bar with progressive blur
             top.yukonga.miuix.kmp.basic.Scaffold(
                 modifier = Modifier.fillMaxSize(),
@@ -192,12 +201,12 @@ fun TraeClockApp() {
                                     .matchParentSize()
                                     .hazeEffect(state = hazeState) {
                                         blurRadius = 15.dp
-                                        backgroundColor = surfaceColor
+                                        backgroundColor = appBackground
                                         noiseFactor = 0f
                                         // 更透：着色叠加从 0.3 降到 0.15（模糊强度不变，
                                         // 底色透出更多）；progressive 保持全强度——
                                         // 渐隐会在栏底露出暗色带（此前用户报过的黑块）
-                                        tints = listOf(HazeTint(surfaceColor.copy(alpha = 0.15f)))
+                                        tints = listOf(HazeTint(appBackground.copy(alpha = 0.15f)))
                                         progressive = HazeProgressive.Brush(
                                             androidx.compose.ui.graphics.Brush.verticalGradient(
                                                 0f to Color.Black,
@@ -236,6 +245,7 @@ fun TraeClockApp() {
                 CompositionLocalProvider(
                     LocalPageInsets provides innerPadding,
                     LocalBottomBarSpace provides barSpace,
+                    LocalAppBackground provides appBackground,
                 ) {
                 Box(
                     Modifier
@@ -483,28 +493,35 @@ fun HomePage() {
                         }
                     }
                     Spacer(Modifier.height(8.dp))
-                    if (msg.isNotEmpty()) {
-                        Text(msg, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.primary)
-                        Spacer(Modifier.height(8.dp))
-                    }
-                    TextButton(
-                        text = if (busy) "签到中…" else "立即签到（全部）",
-                        enabled = !busy,
-                        onClick = {
-                            busy = true; msg = "签到中…"
-                            scope.launch {
-                                val r = withContext(Dispatchers.IO) { RootCtl.runNow(null) }
-                                busy = false
-                                msg = if (r.code == 0) "已触发全部签到，结果见日志页" else "触发失败: ${r.stdout.take(120)}"
-                                refreshStatus()
-                                // reload the credit-change records after the round settles
-                                refreshDiffs()
+                    // 立即签到块：包进卡片（纯黑底上所有元素都要有可见背景）
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                            if (msg.isNotEmpty()) {
+                                Text(msg, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.primary)
+                                Spacer(Modifier.height(8.dp))
                             }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                            TextButton(
+                                text = if (busy) "签到中…" else "立即签到（全部）",
+                                enabled = !busy,
+                                onClick = {
+                                    busy = true; msg = "签到中…"
+                                    scope.launch {
+                                        val r = withContext(Dispatchers.IO) { RootCtl.runNow(null) }
+                                        busy = false
+                                        msg = if (r.code == 0) "已触发全部签到，结果见日志页" else "触发失败: ${r.stdout.take(120)}"
+                                        refreshStatus()
+                                        // reload the credit-change records after the round settles
+                                        refreshDiffs()
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
                 } else {
-                    Text("加载中…", style = MiuixTheme.textStyles.body2)
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Text("加载中…", style = MiuixTheme.textStyles.body2, modifier = Modifier.padding(16.dp))
+                    }
                 }
             }
 
@@ -597,7 +614,14 @@ fun HomePage() {
                     Spacer(Modifier.height(4.dp))
                     if (snap.rows.isEmpty()) {
                         Spacer(Modifier.height(12.dp))
-                        Text("暂无账号，请到「登录」页添加", style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                        Card(modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                "暂无账号，请到「登录」页添加",
+                                style = MiuixTheme.textStyles.body2,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                modifier = Modifier.padding(16.dp),
+                            )
+                        }
                     }
                     snap.rows.forEach { r ->
                         SmallTitle(text = "${Apps.displayName(r.app)} · ${r.name.ifEmpty { r.userId }}")
@@ -894,7 +918,14 @@ fun AccountsPage() {
                     }
                 }
                 if (accounts.isEmpty()) item {
-                    Text("暂无账号，点右下角 + 添加", style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            "暂无账号，点右下角 + 添加",
+                            style = MiuixTheme.textStyles.body2,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            modifier = Modifier.padding(16.dp),
+                        )
+                    }
                 }
             }
 
@@ -1144,29 +1175,43 @@ fun LogPage() {
             withContext(Dispatchers.IO) { lines = RootCtl.log(300) }
         }
         Box(Modifier.fillMaxSize()) {
-            LazyColumn(
-                Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(
-                    start = 12.dp,
-                    end = 12.dp,
-                    top = LocalPageInsets.current.calculateTopPadding() + 8.dp,
-                    bottom = LocalBottomBarSpace.current + 8.dp,
-                ),
+            // 日志整块包进一张卡片：纯黑底上日志区要有可见背景（与其余页面卡片一致）。
+            // 外层留出顶栏/底栏安全区，卡片填满剩余内容区，列表在卡片内滚动。
+            Card(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(
+                        start = 12.dp,
+                        end = 12.dp,
+                        top = LocalPageInsets.current.calculateTopPadding() + 8.dp,
+                        bottom = LocalBottomBarSpace.current + 8.dp,
+                    ),
             ) {
-                items(lines.reversed()) { raw ->
-                    // render "[ts] line": extract the ts field from the NDJSON event
-                    // color pinned to theme onSurface (default Text uses onPrimary,
-                    // invisible on the theme background in dark mode — user complaint)
-                    val line = formatLogLine(raw)
-                    Text(
-                        line,
-                        style = MiuixTheme.textStyles.footnote2,
-                        fontFamily = FontFamily.Monospace,
-                        color = MiuixTheme.colorScheme.onSurface,
-                        modifier = Modifier.padding(vertical = 1.dp),
-                    )
+                LazyColumn(
+                    Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 14.dp),
+                ) {
+                    items(lines.reversed()) { raw ->
+                        // render "[ts] line": extract the ts field from the NDJSON event
+                        // color pinned to theme onSurface (default Text uses onPrimary,
+                        // invisible on the theme background in dark mode — user complaint)
+                        val line = formatLogLine(raw)
+                        Text(
+                            line,
+                            style = MiuixTheme.textStyles.footnote2,
+                            fontFamily = FontFamily.Monospace,
+                            color = MiuixTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(vertical = 1.dp),
+                        )
+                    }
+                    if (lines.isEmpty()) item {
+                        Text(
+                            "暂无日志（等待守护进程执行签到）",
+                            style = MiuixTheme.textStyles.body2,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                    }
                 }
-                if (lines.isEmpty()) item { Text("暂无日志（等待守护进程执行签到）", style = MiuixTheme.textStyles.body2) }
             }
 
             // refresh FAB — same measured anchor as the accounts add button
@@ -1244,33 +1289,43 @@ fun SettingsPage(onOpenAbout: () -> Unit = {}) {
                         )
                     }
                 }
-                TextButton(
-                    text = "保存设置",
-                    onClick = {
-                        val startMin = (startH * 60 + startM).coerceIn(0, 24 * 60)
-                        val endMinRaw = endH * 60 + endM
-                        // end must be > start; nudge to start+30min when violated
-                        val endMin = if (endMinRaw > startMin) endMinRaw.coerceAtMost(24 * 60) else (startMin + 30).coerceAtMost(24 * 60)
-                        val patch = """{"window_start_min":$startMin,"window_end_min":$endMin,""" +
-                            """"account_gap_secs":${gap.toIntOrNull() ?: 3},"jitter":$jitter,"platform_flavor":"$flavor"}"""
-                        scope.launch {
-                            val r = withContext(Dispatchers.IO) { RootCtl.setConfig(patch) }
-                            saved = if (r.code == 0) "已保存" else "保存失败: ${r.stdout.take(120)}"
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(horizontal = 4.dp, vertical = 12.dp)) {
+                        TextButton(
+                            text = "保存设置",
+                            onClick = {
+                                val startMin = (startH * 60 + startM).coerceIn(0, 24 * 60)
+                                val endMinRaw = endH * 60 + endM
+                                // end must be > start; nudge to start+30min when violated
+                                val endMin = if (endMinRaw > startMin) endMinRaw.coerceAtMost(24 * 60) else (startMin + 30).coerceAtMost(24 * 60)
+                                val patch = """{"window_start_min":$startMin,"window_end_min":$endMin,""" +
+                                    """"account_gap_secs":${gap.toIntOrNull() ?: 3},"jitter":$jitter,"platform_flavor":"$flavor"}"""
+                                scope.launch {
+                                    val r = withContext(Dispatchers.IO) { RootCtl.setConfig(patch) }
+                                    saved = if (r.code == 0) "已保存" else "保存失败: ${r.stdout.take(120)}"
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        if (saved.isNotEmpty()) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                saved,
+                                style = MiuixTheme.textStyles.body2,
+                                color = MiuixTheme.colorScheme.primary,
+                                modifier = Modifier.padding(horizontal = 12.dp),
+                            )
                         }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                if (saved.isNotEmpty()) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(saved, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.primary)
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "说明：windows 指纹 = 默认（与桌面版请求头完全一致；新登录 JWT 校验设备指纹时最稳）。" +
+                                "android 指纹仅作为实验逃生通道，若服务端拒绝请切回 windows。",
+                            style = MiuixTheme.textStyles.footnote1,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            modifier = Modifier.padding(horizontal = 12.dp),
+                        )
+                    }
                 }
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "说明：windows 指纹 = 默认（与桌面版请求头完全一致；新登录 JWT 校验设备指纹时最稳）。" +
-                        "android 指纹仅作为实验逃生通道，若服务端拒绝请切回 windows。",
-                    style = MiuixTheme.textStyles.footnote1,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                )
                 Spacer(Modifier.height(12.dp))
                 SmallTitle(text = "其他")
                 Card(modifier = Modifier.fillMaxWidth()) {

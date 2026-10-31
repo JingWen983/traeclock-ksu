@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="window_bg_dark">#242424</color>
+    <!-- 深色模式 = OLED 纯黑（用户指定）：与 Compose 根背景 appBackground 一致，
+         避免冷启动首帧闪灰 -->
+    <color name="window_bg_dark">#000000</color>
 </resources>

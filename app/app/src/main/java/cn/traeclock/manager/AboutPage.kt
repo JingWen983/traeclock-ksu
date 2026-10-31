@@ -117,13 +117,15 @@ fun AboutPage() {
     val navInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
     // HyperNavBar AboutPage 同款动态背景（RuntimeShader 渐变光斑，OS3 预设）：
-    // 随滚动进度淡出（alpha = 1 - progress），滚过 Logo 区后回到纯色 surface。
-    // 不支持 RuntimeShader（API < 33）时组件内部自动退化为普通 Box。
+    // 深浅色都保留渐变，但基底色跟随全 App 底色（深色 = 纯黑，光斑浮在黑底上；
+    // 浅色 = surface 白底）。随滚动进度淡出（alpha = 1 - progress）。
+    // 不支持 RuntimeShader（API < 33）时组件内部自动退化为纯色 Box。
     BgEffectBackground(
         dynamicBackground = true,
         isFullSize = true,
         modifier = Modifier.fillMaxSize(),
         alpha = { 1f - progress },
+        baseColor = LocalAppBackground.current,
     ) {
         LazyColumn(
             state = listState,
@@ -185,14 +187,16 @@ fun AboutPage() {
             }
 
             item {
-                Text(
-                    "全部数据保存在本机，不上传任何服务器。\n" +
-                        "签到逻辑移植自 TraeWorkAssistant，液态玻璃底栏移植自 HyperNavBar。",
-                    style = MiuixTheme.textStyles.footnote1,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 8.dp),
-                )
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        "全部数据保存在本机，不上传任何服务器。\n" +
+                            "签到逻辑移植自 TraeWorkAssistant，液态玻璃底栏移植自 HyperNavBar。",
+                        style = MiuixTheme.textStyles.footnote1,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    )
+                }
             }
         }
 

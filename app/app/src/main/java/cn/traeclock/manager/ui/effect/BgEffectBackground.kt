@@ -10,6 +10,7 @@ package cn.traeclock.manager.ui.effect
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Spacer
@@ -19,6 +20,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.dp
@@ -60,17 +62,20 @@ fun BgEffectBackground(
     effectBackground: Boolean = true,
     isOs3Effect: Boolean = true,
     alpha: () -> Float = { 1f },
+    // 渐变光斑的基底色（TraeClock 扩展参数，上游写死 colorScheme.surface）：
+    // 深色模式传纯黑 → 光斑浮在黑底上（OLED 发光效果），浅色模式保持 surface 白底
+    baseColor: Color = MiuixTheme.colorScheme.surface,
     content: @Composable (BoxScope.() -> Unit),
 ) {
     val shaderSupported = remember { isRuntimeShaderSupported() }
     if (!shaderSupported) {
-        Box(modifier = modifier, content = content)
+        Box(modifier = modifier.background(baseColor), content = content)
         return
     }
     Box(
         modifier = modifier,
     ) {
-        val surface = MiuixTheme.colorScheme.surface
+        val surface = baseColor
         val deviceType = if (shouldShowSplitPane()) DeviceType.PAD else DeviceType.PHONE
         val isDarkTheme = isInDarkTheme()
         val painter = remember(isOs3Effect) { BgEffectPainter(isOs3Effect) }
