@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import cn.traeclock.manager.ui.effect.BgEffectBackground
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
@@ -115,7 +116,15 @@ fun AboutPage() {
     val topInset = LocalPageInsets.current.calculateTopPadding()
     val navInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
-    Box(Modifier.fillMaxSize()) {
+    // HyperNavBar AboutPage 同款动态背景（RuntimeShader 渐变光斑，OS3 预设）：
+    // 随滚动进度淡出（alpha = 1 - progress），滚过 Logo 区后回到纯色 surface。
+    // 不支持 RuntimeShader（API < 33）时组件内部自动退化为普通 Box。
+    BgEffectBackground(
+        dynamicBackground = true,
+        isFullSize = true,
+        modifier = Modifier.fillMaxSize(),
+        alpha = { 1f - progress },
+    ) {
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),

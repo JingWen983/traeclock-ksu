@@ -194,7 +194,10 @@ fun TraeClockApp() {
                                         blurRadius = 15.dp
                                         backgroundColor = surfaceColor
                                         noiseFactor = 0f
-                                        tints = listOf(HazeTint(surfaceColor.copy(alpha = 0.3f)))
+                                        // 更透：着色叠加从 0.3 降到 0.15（模糊强度不变，
+                                        // 底色透出更多）；progressive 保持全强度——
+                                        // 渐隐会在栏底露出暗色带（此前用户报过的黑块）
+                                        tints = listOf(HazeTint(surfaceColor.copy(alpha = 0.15f)))
                                         progressive = HazeProgressive.Brush(
                                             androidx.compose.ui.graphics.Brush.verticalGradient(
                                                 0f to Color.Black,
