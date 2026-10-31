@@ -431,10 +431,15 @@ fun HomePage() {
                 val s = status
                 if (s != null) {
                     // ── two-card dashboard row: daemon state | accounts ──
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // IntrinsicSize.Min + fillMaxHeight：两卡等高（内容行数不同也不会
+                    // 一高一矮，视觉上顶部/底部严格对齐）
+                    Row(
+                        Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         // left card: daemon running + today's progress + next check-in
                         Card(
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
                             colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
                         ) {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -481,7 +486,7 @@ fun HomePage() {
                         }
                         // right card: accounts summary + credits total
                         Card(
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
                             colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
                         ) {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -559,7 +564,10 @@ fun HomePage() {
             item {
                 val todayDiffs = diffs.filter { it.date == todayStr() }
                 val todaySum = todayDiffs.mapNotNull { it.delta }.sum()
-                SmallTitle(text = "近期积分变动")
+                SmallTitle(
+                    text = "近期积分变动",
+                    modifier = Modifier.padding(start = 16.dp),
+                )
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
@@ -626,13 +634,19 @@ fun HomePage() {
             item {
                 val snap = snapshot
                 if (snap == null) {
-                    SmallTitle(text = "积分")
+                    SmallTitle(
+                        text = "积分",
+                        modifier = Modifier.padding(start = 16.dp),
+                    )
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         LinearProgressIndicator(modifier = Modifier.weight(1f))
                         Text("查询中…", style = MiuixTheme.textStyles.body2)
                     }
                 } else {
-                    SmallTitle(text = "实时积分")
+                    SmallTitle(
+                        text = "实时积分",
+                        modifier = Modifier.padding(start = 16.dp),
+                    )
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
@@ -663,7 +677,10 @@ fun HomePage() {
                         }
                     }
                     snap.rows.forEach { r ->
-                        SmallTitle(text = "${Apps.displayName(r.app)} · ${r.name.ifEmpty { r.userId }}")
+                        SmallTitle(
+                            text = "${Apps.displayName(r.app)} · ${r.name.ifEmpty { r.userId }}",
+                            modifier = Modifier.padding(start = 16.dp),
+                        )
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
@@ -1302,7 +1319,10 @@ fun SettingsPage(onOpenAbout: () -> Unit = {}) {
 
         LazyColumn(Modifier.fillMaxSize(), contentPadding = pagePadding(PaddingValues(0.dp))) {
             item {
-                SmallTitle(text = "签到调度")
+                SmallTitle(
+                    text = "签到调度",
+                    modifier = Modifier.padding(start = 16.dp),
+                )
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
                     colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
@@ -1329,7 +1349,10 @@ fun SettingsPage(onOpenAbout: () -> Unit = {}) {
                         TextField(value = gap, onValueChange = { gap = it.filter { c -> c.isDigit() } }, label = "秒", modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp))
                     }
                 }
-                SmallTitle(text = "平台指纹")
+                SmallTitle(
+                    text = "平台指纹",
+                    modifier = Modifier.padding(start = 16.dp),
+                )
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
                     colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
@@ -1389,7 +1412,10 @@ fun SettingsPage(onOpenAbout: () -> Unit = {}) {
                     }
                 }
                 Spacer(Modifier.height(12.dp))
-                SmallTitle(text = "其他")
+                SmallTitle(
+                    text = "其他",
+                    modifier = Modifier.padding(start = 16.dp),
+                )
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.defaultColors(LocalCardColor.current ?: MiuixTheme.colorScheme.surfaceContainer),
