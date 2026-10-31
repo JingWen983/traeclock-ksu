@@ -75,6 +75,16 @@ object RootCtl {
 
     fun status(): JsonObject? = call("status").json()
 
+    /** Module (daemon + binary) version from the installed module.prop — the
+     *  APK and the module update independently, so the About page shows both. */
+    fun moduleVersion(): String? = runCatching {
+        val res = Shell.cmd("cat /data/adb/modules/traeclock/module.prop 2>/dev/null").exec()
+        res.out.firstOrNull { it.startsWith("version=") }
+            ?.removePrefix("version=")
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+    }.getOrNull()
+
     /** Real-time credits query across all enabled accounts (network on device). */
     fun credits(): JsonObject? = call("credits").json()
 

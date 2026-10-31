@@ -34,6 +34,7 @@ import top.yukonga.miuix.kmp.blur.layerBackdrop
 import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Add
+import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.icon.extended.Contacts
 import top.yukonga.miuix.kmp.icon.extended.Home
 import top.yukonga.miuix.kmp.icon.extended.Notes
@@ -60,6 +61,7 @@ import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.FloatingActionButton
 import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Switch
@@ -67,6 +69,7 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.window.WindowBottomSheet
+import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.WindowDropdownPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -144,6 +147,10 @@ fun TraeClockApp() {
     val controller = remember { top.yukonga.miuix.kmp.theme.ThemeController(top.yukonga.miuix.kmp.theme.ColorSchemeMode.System) }
     top.yukonga.miuix.kmp.theme.MiuixTheme(controller = controller) {
         var tab by remember { mutableIntStateOf(0) }
+        // 关于页：二级页面（顶栏返回、隐藏玻璃底栏），从设置页入口进入
+        var showAbout by remember { mutableStateOf(false) }
+        // 系统返回手势在关于页回到设置，而不是直接退出应用
+        androidx.activity.compose.BackHandler(enabled = showAbout) { showAbout = false }
         val tabs = listOf("主页", "账号", "日志", "设置")
         val icons = listOf(
             MiuixIcons.Home,
@@ -197,10 +204,27 @@ fun TraeClockApp() {
                                     }
                             )
                         }
-                        TopAppBar(
-                            title = tabs[tab],
-                            color = barColor,
-                        )
+                        // 关于页走二级页面顶栏（返回箭头）；其余沿用标签标题
+                        if (showAbout) {
+                            TopAppBar(
+                                title = "关于",
+                                color = barColor,
+                                navigationIcon = {
+                                    IconButton(onClick = { showAbout = false }) {
+                                        Icon(
+                                            imageVector = MiuixIcons.Back,
+                                            contentDescription = "返回",
+                                            tint = MiuixTheme.colorScheme.onBackground,
+                                        )
+                                    }
+                                },
+                            )
+                        } else {
+                            TopAppBar(
+                                title = tabs[tab],
+                                color = barColor,
+                            )
+                        }
                     }
                 },
             ) { innerPadding ->
@@ -216,24 +240,27 @@ fun TraeClockApp() {
                         .then(if (hazeState != null) Modifier.hazeSource(hazeState) else Modifier)
                         .layerBackdrop(backdrop)
                 ) {
-                    when (tab) {
-                        0 -> HomePage()
-                        1 -> AccountsPage()
-                        2 -> LogPage()
-                        3 -> SettingsPage()
+                    when {
+                        showAbout -> AboutPage()
+                        tab == 0 -> HomePage()
+                        tab == 1 -> AccountsPage()
+                        tab == 2 -> LogPage()
+                        else -> SettingsPage(onOpenAbout = { showAbout = true })
                     }
                 }
             }
                 }
-            LiquidGlassBottomBar(
-                tabs = tabs,
-                icons = icons,
-                selected = tab,
-                onSelect = { tab = it },
-                backdrop = backdrop,
-                onSpaceChange = { barSpace = it },
-                modifier = Modifier.align(Alignment.BottomCenter),
-            )
+            if (!showAbout) {
+                LiquidGlassBottomBar(
+                    tabs = tabs,
+                    icons = icons,
+                    selected = tab,
+                    onSelect = { tab = it },
+                    backdrop = backdrop,
+                    onSpaceChange = { barSpace = it },
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                )
+            }
         }
     }
 }
@@ -1155,7 +1182,7 @@ fun LogPage() {
 // ── 设置 ─────────────────────────────────────────────────────────────────────
 
 @Composable
-fun SettingsPage() {
+fun SettingsPage(onOpenAbout: () -> Unit = {}) {
     StatusGate { _ ->
         val scope = rememberCoroutineScope()
         var status by remember { mutableStateOf<StatusView?>(null) }
@@ -1241,6 +1268,15 @@ fun SettingsPage() {
                     style = MiuixTheme.textStyles.footnote1,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 )
+                Spacer(Modifier.height(12.dp))
+                SmallTitle(text = "其他")
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    ArrowPreference(
+                        title = "关于 TraeClock",
+                        summary = "版本、开源许可与上游贡献",
+                        onClick = onOpenAbout,
+                    )
+                }
             }
         }
 
