@@ -127,8 +127,8 @@ fun AboutPage() {
                 bottom = navInset + 28.dp,
             ),
         ) {
-            // room for the floating logo block
-            item { Spacer(Modifier.height(logoHeight + 12.dp)) }
+            // room for the floating logo block (top padding 8 + logo box 28 + gap 8)
+            item { Spacer(Modifier.height(logoHeight + 44.dp)) }
 
             item {
                 Card(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
@@ -276,7 +276,7 @@ fun AboutPage() {
 /** Static label/value row used by the version card. */
 @Composable
 private fun InfoLine(label: String, value: String) {
-    Column(Modifier.padding(vertical = 4.dp)) {
+    Column(Modifier.padding(vertical = 6.dp)) {
         Text(label, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
         Text(value, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.onSurface)
     }
