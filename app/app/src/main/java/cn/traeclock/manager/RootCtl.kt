@@ -111,6 +111,15 @@ object RootCtl {
 
     fun setConfig(patchJson: String): CtlResult = call("config", patchJson)
 
+    /** 清理 N 天前的日志（默认 7 天），返回 (removedFiles, keptLines) 或 null。 */
+    fun cleanLogs(days: Int = 7): Pair<Int, Int>? {
+        val obj = call("clean-logs", days.toString()).json() ?: return null
+        if (obj.get("ok")?.asBoolean != true) return null
+        val f = obj.get("removed_files")?.asInt ?: 0
+        val l = obj.get("kept_lines")?.asInt ?: 0
+        return f to l
+    }
+
     fun log(lines: Int = 200): List<String> {
         val obj = call("log", lines.toString()).json() ?: return emptyList()
         return obj.getAsJsonArray("lines")?.map { it.asString } ?: emptyList()

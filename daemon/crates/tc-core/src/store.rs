@@ -261,6 +261,80 @@ impl Store {
         let start = lines.len().saturating_sub(n);
         lines[start..].iter().map(|s| s.to_string()).collect()
     }
+
+    /// Clean up log files older than days days (manager 清理日志):
+    /// - logs/checkin.log: keep only lines dated within the window (parse the
+    ///   leading "[YYYY-MM-DD ...]" timestamp; undated legacy lines are kept),
+    ///   rewriting the file in place
+    /// - logs/events.ndjson + rotated events.ndjson.1: NDJSON events carry
+    ///   "ts" - files whose every line is older than the window are dropped
+    ///   outright; the current file is filtered line-by-line otherwise
+    ///
+    /// Returns (removed_files, kept_lines) for the confirmation toast.
+    /// Never touches anything outside the logs/ directory.
+    pub fn clean_logs_older_than(&self, days: u32) -> Result<(usize, usize), String> {
+        use chrono::NaiveDate;
+        let logs = self.data_dir.join("logs");
+        let cutoff = chrono::Local::now().date_naive() - chrono::Duration::days(days as i64);
+        let mut removed_files = 0usize;
+        let mut kept_lines = 0usize;
+
+        // 1. checkin.log - filter by leading [YYYY-MM-DD timestamp
+        let cl = logs.join("checkin.log");
+        if let Ok(raw) = std::fs::read_to_string(&cl) {
+            let mut kept: Vec<&str> = Vec::new();
+            for line in raw.lines() {
+                let dated = line
+                    .strip_prefix('[')
+                    .and_then(|rest| rest.get(..10))
+                    .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
+                match dated {
+                    Some(d) if d < cutoff => {} // drop: older than the window
+                    _ => {
+                        kept.push(line);
+                        kept_lines += 1;
+                    }
+                }
+            }
+            let body = if kept.is_empty() { String::new() } else { kept.join("
+") + "
+" };
+            std::fs::write(&cl, body).map_err(|e| e.to_string())?;
+        }
+
+        // 2. events.ndjson(.1) - drop the file when every dated line is stale,
+        //    else rewrite with only fresh lines; undated lines are kept.
+        for name in ["events.ndjson", "events.ndjson.1"] {
+            let p = logs.join(name);
+            let Ok(raw) = std::fs::read_to_string(&p) else { continue };
+            let lines: Vec<&str> = raw.lines().collect();
+            let mut fresh: Vec<&str> = Vec::new();
+            for l in &lines {
+                let keep = serde_json::from_str::<serde_json::Value>(l)
+                    .ok()
+                    .and_then(|v| v.get("ts").and_then(|t| t.as_str()).map(String::from))
+                    .and_then(|ts| NaiveDate::parse_from_str(&ts[..10.min(ts.len())], "%Y-%m-%d").ok())
+                    .map(|d| d >= cutoff)
+                    .unwrap_or(true); // no ts / unparsable -> keep
+                if keep {
+                    fresh.push(*l);
+                }
+            }
+            if fresh.is_empty() && !lines.is_empty() {
+                let _ = std::fs::remove_file(&p);
+                removed_files += 1;
+            } else if fresh.len() < lines.len() {
+                let body: String = fresh.join("
+") + "
+";
+                std::fs::write(&p, body).map_err(|e| e.to_string())?;
+                kept_lines += fresh.len();
+            } else {
+                kept_lines += fresh.len();
+            }
+        }
+        Ok((removed_files, kept_lines))
+    }
 }
 
 #[cfg(test)]
@@ -352,6 +426,47 @@ mod tests {
         let tail = st.tail_events(5);
         assert_eq!(tail.len(), 5);
         assert!(tail[4].contains("\"i\":49"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// clean_logs_older_than: checkin.log lines dated older than the window
+    /// are dropped (undated legacy lines kept); events.ndjson lines with a
+    /// fresh ts survive, all-stale files are removed entirely.
+    #[test]
+    fn clean_logs_drops_old_keeps_fresh() {
+        let dir = tmpdir();
+        let st = Store::new(&dir);
+        st.ensure_dirs().unwrap();
+        let old = (chrono::Local::now().date_naive() - chrono::Duration::days(10))
+            .format("%Y-%m-%d").to_string();
+        let fresh = (chrono::Local::now().date_naive() - chrono::Duration::days(1))
+            .format("%Y-%m-%d").to_string();
+        // checkin.log: old dated + fresh dated + undated legacy line
+        let cl = dir.join("logs").join("checkin.log");
+        std::fs::write(&cl, format!(
+            "[{old} 08:00:00] [trae] 成功0/已签到0/失败1/总计1\n[{fresh} 09:00:00] [trae] 成功1/总计1\nlegacy undated line\n"
+        )).unwrap();
+        // events.ndjson: one stale (10d old ts) + one fresh line
+        let ev = dir.join("logs").join("events.ndjson");
+        std::fs::write(&ev, format!(
+            "{{\"type\":\"account\",\"ts\":\"{old}T08:00:00\"}}\n{{\"type\":\"done\",\"ts\":\"{fresh}T09:00:00\"}}\n"
+        )).unwrap();
+        // rotated file entirely stale → should be removed
+        let ev1 = dir.join("logs").join("events.ndjson.1");
+        std::fs::write(&ev1, format!("{{\"type\":\"done\",\"ts\":\"{old}T08:00:00\"}}\n")).unwrap();
+
+        let (removed_files, kept_lines) = st.clean_logs_older_than(7).unwrap();
+
+        let after = std::fs::read_to_string(&cl).unwrap();
+        assert!(!after.contains(&old), "old checkin line dropped");
+        assert!(after.contains(&fresh), "fresh checkin line kept");
+        assert!(after.contains("legacy undated line"), "undated line kept");
+        let ev_after = std::fs::read_to_string(&ev).unwrap();
+        assert!(ev_after.contains("\"done\""), "fresh event kept");
+        assert!(!ev_after.contains("account"), "stale event dropped");
+        assert!(!ev1.exists(), "fully stale rotated file removed");
+        assert_eq!(removed_files, 1);
+        assert!(kept_lines >= 2);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

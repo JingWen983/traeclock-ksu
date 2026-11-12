@@ -70,6 +70,7 @@ import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.window.WindowDialog
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.window.WindowBottomSheet
 import top.yukonga.miuix.kmp.preference.ArrowPreference
@@ -1281,6 +1282,9 @@ fun LogPage() {
     StatusGate { _ ->
         val scope = rememberCoroutineScope()
         var lines by remember { mutableStateOf<List<String>>(emptyList()) }
+        var showCleanDialog by remember { mutableStateOf(false) }
+        var cleaning by remember { mutableStateOf(false) }
+        var cleanResult by remember { mutableStateOf("") }
         LaunchedEffect(Unit) {
             withContext(Dispatchers.IO) { lines = RootCtl.log(300) }
         }
@@ -1319,6 +1323,66 @@ fun LogPage() {
                             "暂无日志（等待守护进程执行签到）",
                             style = MiuixTheme.textStyles.body2,
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                    }
+                    // 清理日志入口：卡片底部一行按钮 + 上次清理结果回显
+                    item {
+                        Column(Modifier.fillMaxWidth().padding(top = 10.dp)) {
+                            if (cleanResult.isNotEmpty()) {
+                                Text(
+                                    cleanResult,
+                                    style = MiuixTheme.textStyles.footnote2,
+                                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                    modifier = Modifier.padding(bottom = 4.dp),
+                                )
+                            }
+                            TextButton(
+                                text = if (cleaning) "清理中…" else "清理一周前的日志",
+                                enabled = !cleaning,
+                                onClick = { showCleanDialog = true },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 清理确认对话框
+            if (showCleanDialog) {
+                WindowDialog(
+                    show = true,
+                    title = "清理日志",
+                    onDismissRequest = { showCleanDialog = false },
+                ) {
+                    Column(Modifier.fillMaxWidth()) {
+                        Text(
+                            "将删除 7 天前的签到日志与事件记录，最近 7 天的日志保留。此操作不可撤销。",
+                            style = MiuixTheme.textStyles.body2,
+                            color = MiuixTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(bottom = 12.dp),
+                        )
+                        TextButton(
+                            text = "确认清理",
+                            onClick = {
+                                showCleanDialog = false
+                                cleaning = true
+                                scope.launch {
+                                    val r = withContext(Dispatchers.IO) { RootCtl.cleanLogs(7) }
+                                    cleaning = false
+                                    cleanResult = if (r != null) {
+                                        "✅ 已清理：删除 ${r.first} 个过期日志文件，保留 ${r.second} 行近期日志"
+                                    } else {
+                                        "❌ 清理失败，请重试"
+                                    }
+                                    withContext(Dispatchers.IO) { lines = RootCtl.log(300) }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        TextButton(
+                            text = "取消",
+                            onClick = { showCleanDialog = false },
+                            modifier = Modifier.fillMaxWidth(),
                         )
                     }
                 }

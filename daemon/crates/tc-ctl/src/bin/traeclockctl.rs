@@ -60,6 +60,7 @@ fn main() {
         Some("run-now") => cmd_run_now(&store, args.get(1).map(String::as_str)),
         Some("config") => cmd_config(&store, &args[1..]),
         Some("log") => cmd_log(&store, args.get(1)),
+        Some("clean-logs") => cmd_clean_logs(&store, args.get(1)),
         Some("checkin-log") => cmd_checkin_log(&store),
         Some("trae-login-url") => cmd_trae_login_url(&store),
         Some("trae-wait") => cmd_trae_wait(args.get(1).map(|s| s.as_str())),
@@ -80,7 +81,7 @@ fn main() {
 
 fn print_usage() {
     eprintln!(
-        "usage: traeclockctl <status|accounts|add|remove|enable|disable|run-now|config|log|checkin-log|\
+        "usage: traeclockctl <status|accounts|add|remove|enable|disable|run-now|config|log|checkin-log|clean-logs|\
 trae-login-url|trae-callback|trae-refresh|wb-start|wb-poll|qoder-start|qoder-wait|credits|credit-diffs|debug-credits|daemon-pid> [args]"
     );
 }
@@ -420,6 +421,24 @@ fn merge_json(base: serde_json::Value, patch: serde_json::Value) -> serde_json::
 fn cmd_log(store: &Store, n: Option<&String>) -> i32 {
     let n: usize = n.and_then(|s| s.parse().ok()).unwrap_or(200);
     ok_json(serde_json::json!({ "ok": true, "lines": store.tail_events(n) }))
+}
+
+/// clean-logs [days] — drop log lines/files older than the window (default 7
+/// days). Operates only on logs/ inside the data dir.
+fn cmd_clean_logs(store: &Store, days: Option<&String>) -> i32 {
+    let days: u32 = days.and_then(|s| s.parse().ok()).unwrap_or(7);
+    if days == 0 {
+        return err_json("days must be >= 1 (0 would wipe all logs; remove logs/ manually if needed)".into());
+    }
+    match store.clean_logs_older_than(days) {
+        Ok((removed_files, kept_lines)) => ok_json(serde_json::json!({
+            "ok": true,
+            "days": days,
+            "removed_files": removed_files,
+            "kept_lines": kept_lines,
+        })),
+        Err(e) => err_json(e),
+    }
 }
 
 fn cmd_checkin_log(store: &Store) -> i32 {
