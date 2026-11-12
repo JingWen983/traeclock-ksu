@@ -67,6 +67,31 @@ impl Event {
         }
     }
 
+    /// Account skipped because it is cooling down (or permanently dead):
+    /// status=cooldown, carries error type, reason and the cooldown end
+    /// (unix seconds; 9_999_999_999 = permanent → needs re-login).
+    pub fn account_cooldown(
+        index: usize,
+        user_id: &str,
+        name: &str,
+        error_type: &str,
+        cooldown_until: i64,
+        reason: &str,
+    ) -> Event {
+        Event {
+            kind: "account".into(),
+            fields: json!({
+                "index": index,
+                "user_id": user_id,
+                "name": name,
+                "status": "cooldown",
+                "error_type": error_type,
+                "cooldown_until": cooldown_until,
+                "message": if reason.is_empty() { "冷却中，本轮跳过".to_string() } else { format!("冷却中，本轮跳过（{reason}）") },
+            }),
+        }
+    }
+
     pub fn account_fail(
         index: usize,
         user_id: &str,
@@ -126,6 +151,19 @@ mod tests {
         fn emit(&mut self, ev: &Event) {
             self.0.push(ev.clone());
         }
+    }
+
+    #[test]
+    fn cooldown_event_shape() {
+        let e = Event::account_cooldown(1, "u1", "a", "DeviceSigned", 12345, "设备当日已签");
+        let line = e.to_line();
+        assert!(line.contains("\"status\":\"cooldown\""));
+        assert!(line.contains("\"error_type\":\"DeviceSigned\""));
+        assert!(line.contains("\"cooldown_until\":12345"));
+        assert!(line.contains("冷却中"));
+        // permanent dead account keeps the sentinel, message carries reason
+        let dead = Event::account_cooldown(2, "u2", "b", "SessionDead", 9_999_999_999, "401");
+        assert!(dead.to_line().contains("9999999999"));
     }
 
     #[test]

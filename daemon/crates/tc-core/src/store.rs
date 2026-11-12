@@ -77,6 +77,10 @@ pub struct RoundRecord {
     pub ok: usize,
     pub already: usize,
     pub failed: usize,
+    /// Daily attempt counter (v0.5.25): how many rounds ran for this app
+    /// today, used to cap full-failure retries. Resets each new day.
+    #[serde(default)]
+    pub attempts: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -292,19 +292,31 @@ fn checkin_one(
 /// Persists cooldowns / state / summary; emits the NDJSON event pipeline.
 pub fn run_round(store: &Store, cfg: &AppConfig, sink: &mut dyn Sink) -> Value {
     let accounts_all = store.accounts();
-    let mut accounts: Vec<Account> = accounts_all
+    let all_accounts: Vec<Account> = accounts_all
         .accounts
         .iter()
         .filter(|a| a.app == crate::store::APP_TRAE && a.enabled)
         .cloned()
         .collect();
-    // skip accounts that are currently cooling down or permanently dead
+    // skip accounts that are currently cooling down or permanently dead —
+    // VISIBLY: each skipped account emits a cooldown event (status=cooldown
+    // with error type, reason and cooldown end) and is counted in the summary
+    // line, so a skipped account never disappears without a trace.
     let now_ts = chrono::Utc::now().timestamp();
     let mut cooldowns = CooldownState { map: store.cooldowns() };
-    accounts.retain(|a| {
+    let mut skipped_cooldown = 0usize;
+    let mut accounts: Vec<(usize, Account)> = Vec::new();
+    for (i, a) in all_accounts.iter().enumerate() {
         let uid = jwt::parse(a.jwt.as_deref().unwrap_or("")).user_id.unwrap_or_else(|| a.user_id.clone());
-        !cooldowns.is_cooling(&uid, now_ts)
-    });
+        match cooldowns.map.cooldowns.get(&uid) {
+            Some(e) if e.until > now_ts => {
+                skipped_cooldown += 1;
+                let name = if a.name.is_empty() { format!("账号{}", i + 1) } else { a.name.clone() };
+                sink.emit(&Event::account_cooldown(i + 1, &uid, &name, &e.error_type, e.until, &e.reason));
+            }
+            _ => accounts.push((i, a.clone())),
+        }
+    }
 
     let agent = http::agent(30);
     let mut ok = 0usize;
@@ -314,13 +326,13 @@ pub fn run_round(store: &Store, cfg: &AppConfig, sink: &mut dyn Sink) -> Value {
     let mut results: Vec<Value> = Vec::with_capacity(accounts.len());
     let mut state = store.state();
 
-    sink.emit(&Event::start(accounts.len()));
+    sink.emit(&Event::start(all_accounts.len()));
 
-    for (i, acc) in accounts.iter().enumerate() {
-        if i > 0 && cfg.account_gap_secs > 0 {
+    for (n, (orig_i, acc)) in accounts.iter().enumerate() {
+        if n > 0 && cfg.account_gap_secs > 0 {
             std::thread::sleep(std::time::Duration::from_secs(cfg.account_gap_secs));
         }
-        let idx = i + 1;
+        let idx = orig_i + 1;
         let name = if acc.name.is_empty() { format!("账号{idx}") } else { acc.name.clone() };
 
         // JWT expiry warning (warnings only; never blocks)
@@ -397,7 +409,10 @@ pub fn run_round(store: &Store, cfg: &AppConfig, sink: &mut dyn Sink) -> Value {
     let _ = store.save_cooldowns(&cooldowns.map);
     let _ = store.save_state(&state);
     let now_txt = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let mut line = format!("[{now_txt}] [trae] 成功{ok}/已签到{already}/失败{failed}/总计{}", accounts.len());
+    let mut line = format!(
+        "[{now_txt}] [trae] 成功{ok}/已签到{already}/失败{failed}/冷却{skipped_cooldown}/总计{}",
+        all_accounts.len()
+    );
     if !warnings.is_empty() {
         line.push_str(&format!(" | 告警: {}", warnings.join("; ")));
     }

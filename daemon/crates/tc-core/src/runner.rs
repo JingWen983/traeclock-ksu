@@ -128,17 +128,50 @@ fn record_credit_diffs(
     }
 }
 
+/// Persist the round result. Fix (v0.5.25): a round where NOTHING succeeded
+/// (ok+already == 0 and there was something to do) no longer marks the day as
+/// "ran" — the daemon will re-attempt on its next wake instead of skipping the
+/// app until tomorrow. Empty rounds (no enabled accounts) still mark the day,
+/// otherwise the daemon would hammer the scheduler every 10 minutes forever.
+/// Also keeps a rolling daily attempt counter (state.retry_attempts) so the
+/// daemon can cap full-failure retries per day.
 fn record_round(store: &Store, app: &str, done: &Value) {
+    let ok = done.get("ok").and_then(|x| x.as_i64()).unwrap_or(0) as usize;
+    let already = done.get("already").and_then(|x| x.as_i64()).unwrap_or(0) as usize;
+    let failed = done.get("failed").and_then(|x| x.as_i64()).unwrap_or(0) as usize;
     let mut state: RunState = store.state();
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    // reset the daily retry counter on a new day
+    let same_day = state
+        .last_rounds
+        .get(app)
+        .map(|r| r.time.starts_with(&today))
+        .unwrap_or(false);
+    let attempts = if same_day {
+        state.last_rounds.get(app).map(|r| r.attempts).unwrap_or(0)
+    } else {
+        0
+    };
     let rec = RoundRecord {
         time: chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
         app: app.to_string(),
-        ok: done.get("ok").and_then(|x| x.as_i64()).unwrap_or(0) as usize,
-        already: done.get("already").and_then(|x| x.as_i64()).unwrap_or(0) as usize,
-        failed: done.get("failed").and_then(|x| x.as_i64()).unwrap_or(0) as usize,
+        ok,
+        already,
+        failed,
+        attempts: attempts + 1,
     };
     state.last_rounds.insert(app.to_string(), rec);
     let _ = store.save_state(&state);
+}
+
+/// Did this round accomplish anything? A round counts as "done for today"
+/// only when at least one account succeeded or was already checked in —
+/// or when there was nothing to do at all.
+pub fn round_accomplished(done: &Value) -> bool {
+    let ok = done.get("ok").and_then(|x| x.as_i64()).unwrap_or(0) as usize;
+    let already = done.get("already").and_then(|x| x.as_i64()).unwrap_or(0) as usize;
+    let failed = done.get("failed").and_then(|x| x.as_i64()).unwrap_or(0) as usize;
+    ok + already > 0 || (ok + already + failed == 0)
 }
 
 #[cfg(test)]
@@ -175,6 +208,40 @@ mod tests {
             enabled: true,
             ..Default::default()
         }
+    }
+
+    /// v0.5.25: full-failure rounds do NOT mark the day as done — the record
+    /// is persisted (with the daily attempt counter) but ok+already stays 0,
+    /// so the daemon keeps the app due and retries next wake.
+    #[test]
+    fn full_failure_round_keeps_day_open() {
+        let dir = tmpdir();
+        let store = Store::new(&dir);
+        let done = serde_json::json!({ "ok": 0, "already": 0, "failed": 2 });
+        record_round(&store, APP_TRAE, &done);
+        let r = store.state();
+        let rec = r.last_rounds.get(APP_TRAE).unwrap();
+        assert_eq!((rec.ok, rec.already, rec.failed, rec.attempts), (0, 0, 2, 1));
+        assert!(!round_accomplished(&done));
+        // second failed attempt today increments the counter
+        record_round(&store, APP_TRAE, &done);
+        let r2 = store.state();
+        assert_eq!(r2.last_rounds.get(APP_TRAE).unwrap().attempts, 2);
+        // a succeeding round marks the day done and round_accomplished flips
+        let ok_done = serde_json::json!({ "ok": 1, "already": 0, "failed": 0 });
+        record_round(&store, APP_TRAE, &ok_done);
+        let r3 = store.state();
+        assert_eq!(r3.last_rounds.get(APP_TRAE).unwrap().ok, 1);
+        assert!(round_accomplished(&ok_done));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Empty rounds (nothing to do) count as accomplished so the daemon
+    /// does not hammer the scheduler on apps with no enabled accounts.
+    #[test]
+    fn empty_round_counts_as_accomplished() {
+        let done = serde_json::json!({ "ok": 0, "already": 0, "failed": 0 });
+        assert!(round_accomplished(&done));
     }
 
     /// Diff computation: positive movement recorded + event emitted; missing

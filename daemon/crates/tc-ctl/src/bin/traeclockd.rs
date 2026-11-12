@@ -22,6 +22,11 @@ const DATA_DIR_ENV: &str = "TRAECLOCK_DATA_DIR";
 const DEFAULT_DATA_DIR: &str = "/data/adb/traeclock";
 /// Max no-network backoff attempts per round trigger.
 const NET_RETRY_MAX: u32 = 3;
+/// Max daily attempts per app when rounds keep failing completely (v0.5.25):
+/// after this many attempts today, the app waits for tomorrow instead of
+/// retrying every wake (10-minute capped sleeps would otherwise hammer the
+/// server all day). Success or partial success resets the gate via last_rounds.
+const MAX_DAILY_ATTEMPTS: usize = 8;
 const PID_FILE: &str = "daemon.pid";
 
 /// INFO logger: every line carries a local timestamp, e.g.
@@ -120,8 +125,19 @@ fn run_due_apps(store: &Store, cfg: &AppConfig, log: &Log) {
         if now_min < pick_min {
             continue; // today's slot not reached yet
         }
-        if already_ran_today(store, app) {
-            continue;
+        // v0.5.25: "ran today" only gates when the last round accomplished
+        // something (ok+already > 0). A fully-failed round keeps the app due
+        // so the next wake retries it — capped at MAX_DAILY_ATTEMPTS per day.
+        let rec = store.state().last_rounds.get(app).cloned();
+        if let Some(r) = &rec {
+            if r.time.starts_with(&now.format("%Y-%m-%d").to_string()) {
+                if r.ok + r.already > 0 {
+                    continue; // done for today
+                }
+                if r.attempts >= MAX_DAILY_ATTEMPTS {
+                    continue; // gave up for today (all attempts failed)
+                }
+            }
         }
         log.info(&format!(
             "round due: {app} (pick {:02}:{:02}, now {:02}:{:02})",
@@ -194,12 +210,15 @@ fn next_wake_secs(store: &Store, cfg: &AppConfig) -> i64 {
 }
 
 fn already_ran_today(store: &Store, app: &str) -> bool {
+    // v0.5.25 semantics: a day counts as "ran" only when the last round for
+    // this app accomplished something (ok+already > 0) — a fully-failed round
+    // keeps the app due for retry (capped by MAX_DAILY_ATTEMPTS in run_due_apps).
     let state = store.state();
     let today = Local::now().format("%Y-%m-%d").to_string();
     state
         .last_rounds
         .get(app)
-        .map(|r| r.time.starts_with(&today))
+        .map(|r| r.time.starts_with(&today) && r.ok + r.already > 0)
         .unwrap_or(false)
 }
 
