@@ -131,8 +131,8 @@ fn run_due_apps(store: &Store, cfg: &AppConfig, log: &Log) {
         let rec = store.state().last_rounds.get(app).cloned();
         if let Some(r) = &rec {
             if r.time.starts_with(&now.format("%Y-%m-%d").to_string()) {
-                if r.ok + r.already > 0 {
-                    continue; // done for today
+                if r.ok + r.already + r.skipped > 0 {
+                    continue; // done for today (skip = 今天没有签到任务，不算失败)
                 }
                 if r.attempts >= MAX_DAILY_ATTEMPTS {
                     continue; // gave up for today (all attempts failed)
@@ -218,7 +218,7 @@ fn already_ran_today(store: &Store, app: &str) -> bool {
     state
         .last_rounds
         .get(app)
-        .map(|r| r.time.starts_with(&today) && r.ok + r.already > 0)
+        .map(|r| r.time.starts_with(&today) && r.ok + r.already + r.skipped > 0)
         .unwrap_or(false)
 }
 

@@ -139,6 +139,7 @@ fn record_round(store: &Store, app: &str, done: &Value) {
     let ok = done.get("ok").and_then(|x| x.as_i64()).unwrap_or(0) as usize;
     let already = done.get("already").and_then(|x| x.as_i64()).unwrap_or(0) as usize;
     let failed = done.get("failed").and_then(|x| x.as_i64()).unwrap_or(0) as usize;
+    let skipped = done.get("skipped").and_then(|x| x.as_i64()).unwrap_or(0) as usize;
     let mut state: RunState = store.state();
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     // reset the daily retry counter on a new day
@@ -158,6 +159,7 @@ fn record_round(store: &Store, app: &str, done: &Value) {
         ok,
         already,
         failed,
+        skipped,
         attempts: attempts + 1,
     };
     state.last_rounds.insert(app.to_string(), rec);
@@ -171,7 +173,9 @@ pub fn round_accomplished(done: &Value) -> bool {
     let ok = done.get("ok").and_then(|x| x.as_i64()).unwrap_or(0) as usize;
     let already = done.get("already").and_then(|x| x.as_i64()).unwrap_or(0) as usize;
     let failed = done.get("failed").and_then(|x| x.as_i64()).unwrap_or(0) as usize;
-    ok + already > 0 || (ok + already + failed == 0)
+    let skipped = done.get("skipped").and_then(|x| x.as_i64()).unwrap_or(0) as usize;
+    // skip = 今天没有签到任务（上游 3.9.5）：不是失败，不该触发当日重试
+    ok + already + skipped > 0 || (ok + already + failed + skipped == 0)
 }
 
 #[cfg(test)]
@@ -242,6 +246,24 @@ mod tests {
     fn empty_round_counts_as_accomplished() {
         let done = serde_json::json!({ "ok": 0, "already": 0, "failed": 0 });
         assert!(round_accomplished(&done));
+    }
+
+    /// Upstream 3.9.5 skip bucket: "no check-in task today" closes the day
+    /// (no all-day retry) but is neither a success nor a failure.
+    #[test]
+    fn skip_round_closes_day_without_failure() {
+        let dir = tmpdir();
+        let store = Store::new(&dir);
+        let done = serde_json::json!({ "ok": 0, "already": 0, "failed": 0, "skipped": 2 });
+        assert!(round_accomplished(&done));
+        record_round(&store, APP_QODER, &done);
+        let st = store.state();
+        let rec = st.last_rounds.get(APP_QODER).unwrap();
+        assert_eq!((rec.skipped, rec.failed), (2, 0));
+        // mixed: one skipped, one failed → still a failure day (retry allowed)
+        let mixed = serde_json::json!({ "ok": 0, "already": 0, "failed": 1, "skipped": 1 });
+        assert!(round_accomplished(&mixed)); // skipped>0 closes the day
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Diff computation: positive movement recorded + event emitted; missing

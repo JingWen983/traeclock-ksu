@@ -455,7 +455,10 @@ pub fn run_round(store: &Store, cfg: &AppConfig, sink: &mut dyn Sink) -> Value {
 
     for (i, acc) in accounts.iter().enumerate() {
         if i > 0 && cfg.account_gap_secs > 0 {
-            std::thread::sleep(std::time::Duration::from_secs(cfg.account_gap_secs));
+            // P4 防风控：间隔叠加 0.5–1.5× 抖动，打散固定节奏（上游移植）
+            std::thread::sleep(std::time::Duration::from_secs(
+                crate::util::jittered_gap_secs(cfg.account_gap_secs),
+            ));
         }
         let idx = i + 1;
         let aid = acc.user_id.clone();

@@ -32,6 +32,10 @@ pub const CLIENT_MACHINE_OS_DESKTOP: &str = "x86_64_win32";
 
 /// Poll tuning (device-flow OAuth; 1s interval per the R-10 capture).
 pub const POLL_INTERVAL_MS: u64 = 1_000;
+
+/// 零可领任务标记（上游 3.9.5 移植）：盲发兜底全 miss 且没有真实失败时，
+/// 消息以此开头，process_account 据此把该账号归为「无签到任务」skip 而非 fail。
+pub const NO_CLAIMABLE_TAG: &str = "no_claimable_task";
 pub const POLL_TIMEOUT_MS: u64 = 180_000;
 
 // ── creds & device profile ──────────────────────────────────────────────────
@@ -656,10 +660,20 @@ impl BlindRound {
         if self.any_replay {
             return ("already".into(), "每日奖励已领取（盲发回放确认）".into(), self.reward);
         }
-        let mut all = self.fail_parts.clone();
-        all.extend(self.stale_parts.clone());
-        let msg = if all.is_empty() { "盲发无候选可用".into() } else { all.join("；") };
-        ("fail".into(), msg, self.reward)
+        // 上游 3.9.5「无签到任务归跳过」口径：零可领且**无真实失败**——只有
+        // stale（全部 409 CAMPAIGN_NOT_ACTIVE：活动未开放/批次过期）或干脆没有
+        // 候选——不是失败，是「今天没有签到任务」。归 skip：不计失败、不触发
+        // 当日重试，也不进失败推送。真实失败（fail_parts 非空：网络/5xx/BLOCKED）
+        // 仍走 fail 重试语义。
+        if self.fail_parts.is_empty() {
+            let detail = if self.stale_parts.is_empty() {
+                "已知每日活动表为空，无兜底可尝试".to_string()
+            } else {
+                self.stale_parts.join("；")
+            };
+            return ("skip".into(), format!("{NO_CLAIMABLE_TAG}：{detail}"), self.reward);
+        }
+        ("fail".into(), self.fail_parts.join("；"), self.reward)
     }
 }
 
@@ -911,6 +925,7 @@ pub fn run_round(store: &Store, cfg: &AppConfig, sink: &mut dyn Sink) -> Value {
     let mut ok = 0usize;
     let mut already = 0usize;
     let mut failed = 0usize;
+    let mut skipped = 0usize;
     let mut file_mut = accounts_file.clone();
     let mut learned: Vec<(String, String)> = Vec::new();
     let mut table: Vec<(String, String)> = KNOWN_DAILY_CAMPAIGNS
@@ -923,7 +938,10 @@ pub fn run_round(store: &Store, cfg: &AppConfig, sink: &mut dyn Sink) -> Value {
 
     for (i, acc) in accounts.iter().enumerate() {
         if i > 0 && cfg.account_gap_secs > 0 {
-            std::thread::sleep(std::time::Duration::from_secs(cfg.account_gap_secs));
+            // P4 防风控：间隔叠加 0.5–1.5× 抖动，打散固定节奏（上游移植）
+            std::thread::sleep(std::time::Duration::from_secs(
+                crate::util::jittered_gap_secs(cfg.account_gap_secs),
+            ));
         }
         let idx = i + 1;
         let aid = acc.user_id.clone();
@@ -1037,6 +1055,11 @@ pub fn run_round(store: &Store, cfg: &AppConfig, sink: &mut dyn Sink) -> Value {
                 already += 1;
                 sink.emit(&Event::account_already(idx, &aid, &name, reward.map(|r| r as i64)));
             }
+            // 上游 3.9.5：无签到任务（活动未开放/不在投放范围）= skip，不是失败
+            "skip" => {
+                skipped += 1;
+                sink.emit(&Event::account_skip(idx, &aid, &name, &message));
+            }
             _ => {
                 failed += 1;
                 sink.emit(&Event::account_fail(idx, &aid, &name, &message, None, None, None));
@@ -1047,16 +1070,51 @@ pub fn run_round(store: &Store, cfg: &AppConfig, sink: &mut dyn Sink) -> Value {
     let _ = store.save_accounts(&file_mut);
     let now_txt = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     store.append_checkin_log(&format!(
-        "[{now_txt}] [qoder] 成功{ok}/已领{already}/失败{failed}/总计{}",
+        "[{now_txt}] [qoder] 成功{ok}/已领{already}/无任务{skipped}/失败{failed}/总计{}",
         accounts.len()
     ));
-    sink.emit(&Event::done(ok, already, failed));
-    Event::done(ok, already, failed).to_json()
+    sink.emit(&Event::done_with_skip(ok, already, failed, skipped));
+    Event::done_with_skip(ok, already, failed, skipped).to_json()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Upstream 3.9.5 port: zero-claimable with NO real failure (only stale
+    /// 409 CAMPAIGN_NOT_ACTIVE parts, or no candidates at all) is a "no
+    /// check-in task today" skip — never a failure that triggers all-day retry.
+    #[test]
+    fn zero_claimable_without_real_failure_is_skip() {
+        // all candidates stale (409 CAMPAIGN_NOT_ACTIVE)
+        let mut r = BlindRound::default();
+        r.stale_parts.push("camp-1：活动未开放".to_string());
+        let (kind, msg, _) = r.aggregate();
+        assert_eq!(kind, "skip");
+        assert!(msg.starts_with(NO_CLAIMABLE_TAG), "msg={msg}");
+
+        // empty candidate pool
+        let (kind2, msg2, _) = BlindRound::default().aggregate();
+        assert_eq!(kind2, "skip");
+        assert!(msg2.starts_with(NO_CLAIMABLE_TAG));
+
+        // a real failure keeps the retry semantics (fail), stale parts do not mask it
+        let mut f = BlindRound::default();
+        f.fail_parts.push("camp-1：（HTTP 503）".to_string());
+        f.stale_parts.push("camp-2：活动未开放".to_string());
+        let (kind3, msg3, _) = f.aggregate();
+        assert_eq!(kind3, "fail");
+        assert!(!msg3.contains(NO_CLAIMABLE_TAG));
+
+        // success / replay still win over everything
+        let mut s = BlindRound::default();
+        s.any_fresh = true;
+        s.messages.push("camp-1（盲发直领）".to_string());
+        assert_eq!(s.aggregate().0, "success");
+        let mut a = BlindRound::default();
+        a.any_replay = true;
+        assert_eq!(a.aggregate().0, "already");
+    }
 
     /// Upstream-port contract (issue #114/#132): claim requests must use the
     /// minimal header family — the device-fingerprint family gets claim POSTs

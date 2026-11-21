@@ -77,6 +77,10 @@ pub struct RoundRecord {
     pub ok: usize,
     pub already: usize,
     pub failed: usize,
+    /// "No check-in task today" bucket (upstream 3.9.5 skip semantics):
+    /// neither a success nor a failure — must not trigger the failure retry gate.
+    #[serde(default)]
+    pub skipped: usize,
     /// Daily attempt counter (v0.5.25): how many rounds ran for this app
     /// today, used to cap full-failure retries. Resets each new day.
     #[serde(default)]

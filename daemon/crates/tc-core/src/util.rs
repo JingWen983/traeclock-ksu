@@ -24,6 +24,24 @@ pub fn to_hex_lower(bytes: &[u8]) -> String {
     s
 }
 
+/// 签到间隔抖动（P4 防风控，移植自上游 wb_checkin::jittered_gap_secs）：
+/// 在配置 gap 基础上乘 0.5–1.5 的随机系数，打散固定节奏（无 rand 依赖之外的
+/// 额外依赖，用系统时钟纳秒做熵源）。gap == 0（关闭间隔）不抖动。
+pub fn jittered_gap_secs(gap_secs: u64) -> u64 {
+    if gap_secs == 0 {
+        return 0;
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    // factor in thousandths: 500..1499  →  0.5x .. 1.5x
+    let factor = 500 + nanos % 1000;
+    // 下限钳制（上游审查修复）：小 gap 整数除法可能得 0，钳到 max(1, gap/2)
+    let jittered = gap_secs * factor / 1000;
+    jittered.max(gap_secs / 2).max(1)
+}
+
 /// Local timestamp, "%Y-%m-%dT%H:%M:%S" (matches the source's fs_utils::now_iso style).
 pub fn now_iso_local() -> String {
     chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string()

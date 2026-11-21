@@ -30,6 +30,32 @@ impl Event {
         Event { kind: "done".into(), fields: json!({ "ok": ok, "already": already, "failed": failed }) }
     }
 
+    /// Round summary including the "no check-in task" skip bucket (upstream
+    /// 3.9.5): skipped accounts are neither successes nor failures.
+    pub fn done_with_skip(ok: usize, already: usize, failed: usize, skipped: usize) -> Event {
+        Event {
+            kind: "done".into(),
+            fields: json!({
+                "ok": ok, "already": already, "failed": failed, "skipped": skipped
+            }),
+        }
+    }
+
+    /// Account skipped: "no check-in task today" (activities not open / not in
+    /// the campaign pool). Deliberately not a failure — no retry, no fail push.
+    pub fn account_skip(index: usize, user_id: &str, name: &str, message: &str) -> Event {
+        Event {
+            kind: "account".into(),
+            fields: json!({
+                "index": index,
+                "user_id": user_id,
+                "name": name,
+                "status": "skip",
+                "message": message,
+            }),
+        }
+    }
+
     pub fn account_success(
         index: usize,
         user_id: &str,

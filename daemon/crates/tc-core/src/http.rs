@@ -7,6 +7,28 @@
 
 use serde_json::Value;
 
+/// 传输层错误 → 用户可读文案（移植自上游 friendly_net_err，issue #209）。
+/// 原文保留在括号里方便排障；不认识的错误原样返回，避免吞掉诊断信息。
+pub fn friendly_net_err(e: &str) -> String {
+    let lower = e.to_lowercase();
+    let hint = if lower.contains("dns") || lower.contains("resolve") || lower.contains("no such host") {
+        "DNS 解析失败"
+    } else if lower.contains("timed out") || lower.contains("timeout") {
+        "连接超时"
+    } else if lower.contains("refused") {
+        "连接被拒绝"
+    } else if lower.contains("reset") {
+        "连接被重置"
+    } else if lower.contains("certificate") || lower.contains("tls") {
+        "TLS 握手失败"
+    } else if lower.contains("unreachable") {
+        "网络不可达"
+    } else {
+        return e.to_string();
+    };
+    format!("{hint}（{e}）")
+}
+
 /// Blocking agent with a total timeout. Direct-connect semantics.
 pub fn agent(timeout_secs: u64) -> ureq::Agent {
     ureq::AgentBuilder::new()
@@ -38,7 +60,7 @@ pub fn post_json(
             let parsed = serde_json::from_str(&raw).ok();
             (code as i32, parsed, raw)
         }
-        Err(e) => (0, None, e.to_string()),
+        Err(e) => (0, None, friendly_net_err(&e.to_string())),
     }
 }
 
@@ -63,7 +85,7 @@ pub fn get_json(
             let parsed = serde_json::from_str(&raw).ok();
             (code as i32, parsed, raw)
         }
-        Err(e) => (0, None, e.to_string()),
+        Err(e) => (0, None, friendly_net_err(&e.to_string())),
     }
 }
 
